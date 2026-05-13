@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Pizza of the Damned</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; color: #eee;
+    font-family: "Courier New", monospace;
+    overflow: hidden;
+  }
+  #game { display: block; margin: 0 auto; background: #222; cursor: crosshair; }
+  #hud {
+    position: fixed; top: 8px; left: 8px;
+    background: rgba(0,0,0,0.6);
+    padding: 8px 12px; border: 2px solid #f60;
+    font-size: 14px; line-height: 1.5;
+    pointer-events: none;
+  }
+  #hud b { color: #0f0; }
+  #objective {
+    position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.7); padding: 8px 16px;
+    border: 2px solid #f00;
+    font-size: 16px; letter-spacing: 2px;
+    color: #f60; pointer-events: none;
+  }
+  #overlay {
+    position: fixed; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    flex-direction: column; z-index: 10;
+    background: rgba(0,0,0,0.85); gap: 16px;
+  }
+  #overlay.show { display: flex; }
+  #overlay h2 { color: #f00; letter-spacing: 4px; margin: 0;
+    text-shadow: 0 0 12px #f00; font-size: 32px; }
+  #overlay p { margin: 0; color: #ddd; max-width: 500px; text-align: center; }
+  #overlay button {
+    background: #f60; color: #000; border: none;
+    padding: 10px 22px; font-family: inherit; font-size: 15px;
+    font-weight: bold; cursor: pointer; letter-spacing: 2px;
+  }
+  #overlay button:hover { background: #fa0; }
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    box-shadow: inset 0 0 80px rgba(255,0,0,0);
+    transition: box-shadow 0.2s;
+  }
+  #vignette.danger { box-shadow: inset 0 0 200px rgba(255,0,0,0.7); }
+  a.back {
+    position: fixed; bottom: 8px; left: 8px;
+    color: #666; text-decoration: none; font-size: 12px;
+  }
+  a.back:hover { color: #f60; }
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+<div id="hud">
+  HP: <b id="hHp">100</b><br>
+  PIZZA: <b id="hPizza">1</b><br>
+  CASH: <b id="hCash">$0</b><br>
+  PHASE: <b id="hPhase">Lieferung</b>
+</div>
+<div id="objective" id="hObj">Liefere die Pizza an Haus 13</div>
+
+<div id="vignette"></div>
+
+<div id="overlay" id="ovStart">
+  <h2 id="ovTitle">PIZZA OF THE DAMNED</h2>
+  <p id="ovText">
+    Du bist der neue Pizza-Lieferant. Bring die Bestellung zu Haus 13.<br>
+    Steuerung: <b>WASD</b> bewegen &middot; <b>E</b> interagieren<br>
+    Sprint: <b>SHIFT</b> (verbraucht Ausdauer)
+  </p>
+  <button id="ovBtn">PIZZA AUSLIEFERN</button>
+</div>
+
+<a href="index.html" class="back">&larr; Zurück</a>
+
+<script>
+"use strict";
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 1280, H = 720;
+canvas.width = W; canvas.height = H;
+function resize() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  canvas.style.width = (W*s)+'px';
+  canvas.style.height = (H*s)+'px';
+}
+addEventListener('resize', resize); resize();
+
+// ---------- WORLD ----------
+// Map is bigger than viewport; camera follows player
+const MAP_W = 2400, MAP_H = 1600;
+
+// Pizzeria (start) and target house
+const pizzeria = { x: 200, y: 800, r: 60 };
+const targetHouse = { x: MAP_W - 250, y: 300, r: 70, label: '13' };
+
+// Some buildings as obstacles
+const buildings = [];
+function makeBuildings() {
+  buildings.length = 0;
+  // grid of houses with gaps for streets
+  for (let i = 0; i < 7; i++) {
+    for (let j = 0; j < 4; j++) {
+      if ((i + j) % 3 === 0) continue;
+      const x = 380 + i * 290;
+      const y = 180 + j * 360;
+      // skip near target / start
+      if (Math.hypot(x - targetHouse.x, y - targetHouse.y) < 200) continue;
+      if (Math.hypot(x - pizzeria.x, y - pizzeria.y) < 200) continue;
+      buildings.push({
+        x, y,
+        w: 140 + Math.random()*40,
+        h: 100 + Math.random()*40,
+        color: `hsl(${20 + Math.random()*30}, 30%, ${15 + Math.random()*20}%)`,
+        roof: `hsl(${0 + Math.random()*20}, 40%, ${10 + Math.random()*15}%)`
+      });
+    }
+  }
+}
+makeBuildings();
+
+// ---------- STATE ----------
+const state = {
+  phase: 'menu', // menu | deliver | reveal | flee | end
+  player: {
+    x: pizzeria.x, y: pizzeria.y,
+    vx: 0, vy: 0,
+    speed: 220, hp: 100,
+    stamina: 100, sprinting: false,
+    angle: 0,
+    cash: 0,
+    hasPizza: true
+  },
+  demon: null,
+  demons: [],
+  particles: [],
+  cam: { x: 0, y: 0 },
+  keys: {},
+  time: 0,
+  shakeT: 0,
+  flashT: 0,
+  message: 'Liefere die Pizza an Haus 13',
+  interactPrompt: false,
+  fleeTimeLimit: 90,
+  fleeTimer: 0
+};
+
+const hudEl = {
+  hp: document.getElementById('hHp'),
+  pizza: document.getElementById('hPizza'),
+  cash: document.getElementById('hCash'),
+  phase: document.getElementById('hPhase'),
+  obj: document.getElementById('objective')
+};
+const vignette = document.getElementById('vignette');
+const overlay = document.getElementById('overlay');
+const ovTitle = document.getElementById('ovTitle');
+const ovText = document.getElementById('ovText');
+const ovBtn = document.getElementById('ovBtn');
+
+// ---------- INPUT ----------
+addEventListener('keydown', e => {
+  state.keys[e.key.toLowerCase()] = true;
+  if (e.key.toLowerCase() === 'e') tryInteract();
+});
+addEventListener('keyup', e => { state.keys[e.key.toLowerCase()] = false; });
+
+// ---------- INTERACT ----------
+function tryInteract() {
+  if (state.phase === 'deliver' && state.player.hasPizza) {
+    const d = Math.hypot(state.player.x - targetHouse.x, state.player.y - targetHouse.y);
+    if (d < targetHouse.r + 30) startReveal();
+  }
+  if (state.phase === 'flee') {
+    const d = Math.hypot(state.player.x - pizzeria.x, state.player.y - pizzeria.y);
+    if (d < pizzeria.r + 30) winGame();
+  }
+}
+
+// ---------- REVEAL ----------
+function startReveal() {
+  state.phase = 'reveal';
+  state.player.hasPizza = false;
+  state.player.cash += 15; // tip before the horror
+  state.shakeT = 1.0;
+  vignette.classList.add('danger');
+  showOverlay(
+    'SIE IST KEIN MENSCH',
+    'Die Tür öffnet sich. Etwas tritt heraus — Hörner, glühende Augen, ein Lächeln voller Reißzähne. Sie sagt: "Danke für die Pizza, Sterblicher."<br><br>LAUF.',
+    'FLIEHEN',
+    startFlee
+  );
+}
+
+function startFlee() {
+  hideOverlay();
+  state.phase = 'flee';
+  vignette.classList.remove('danger');
+  state.message = 'Komm zurück zur Pizzeria!';
+  state.fleeTimer = 0;
+  // spawn main demon
+  state.demon = makeDemon(targetHouse.x, targetHouse.y, true);
+  state.demons.push(state.demon);
+  // additional demons spawning later
+  state.shakeT = 0.5;
+}
+
+// ---------- DEMONS ----------
+function makeDemon(x, y, boss=false) {
+  return {
+    x, y, vx: 0, vy: 0,
+    speed: boss ? 180 : 200,
+    hp: boss ? 9999 : 9999, // invincible — you can't fight them
+    angle: 0,
+    boss,
+    radius: boss ? 28 : 22,
+    attackCd: 0,
+    color: boss ? '#a00' : '#700'
+  };
+}
+
+function spawnExtraDemon() {
+  // spawn from off-screen edge
+  const edge = Math.floor(Math.random()*4);
+  const m = 50;
+  let x, y;
+  if (edge === 0) { x = state.player.x - W/2 - m; y = state.player.y + (Math.random()-0.5)*H; }
+  else if (edge === 1) { x = state.player.x + W/2 + m; y = state.player.y + (Math.random()-0.5)*H; }
+  else if (edge === 2) { y = state.player.y - H/2 - m; x = state.player.x + (Math.random()-0.5)*W; }
+  else                 { y = state.player.y + H/2 + m; x = state.player.x + (Math.random()-0.5)*W; }
+  x = Math.max(20, Math.min(MAP_W - 20, x));
+  y = Math.max(20, Math.min(MAP_H - 20, y));
+  state.demons.push(makeDemon(x, y));
+}
+
+// ---------- COLLISION ----------
+function collidesBuildings(x, y, r) {
+  for (const b of buildings) {
+    const nx = Math.max(b.x - b.w/2, Math.min(x, b.x + b.w/2));
+    const ny = Math.max(b.y - b.h/2, Math.min(y, b.y + b.h/2));
+    const dx = x - nx, dy = y - ny;
+    if (dx*dx + dy*dy < r*r) return true;
+  }
+  return false;
+}
+
+// ---------- UPDATE ----------
+function update(dt) {
+  if (state.phase === 'menu' || state.phase === 'reveal' || state.phase === 'end') return;
+  state.time += dt;
+
+  const p = state.player;
+  let mx = 0, my = 0;
+  if (state.keys['w']) my -= 1;
+  if (state.keys['s']) my += 1;
+  if (state.keys['a']) mx -= 1;
+  if (state.keys['d']) mx += 1;
+  const ml = Math.hypot(mx, my);
+  if (ml > 0) { mx /= ml; my /= ml; p.angle = Math.atan2(my, mx); }
+
+  const wantSprint = state.keys['shift'] && p.stamina > 0 && ml > 0;
+  p.sprinting = wantSprint;
+  const spd = p.speed * (wantSprint ? 1.7 : 1.0);
+  if (wantSprint) p.stamina = Math.max(0, p.stamina - 35 * dt);
+  else p.stamina = Math.min(100, p.stamina + 12 * dt);
+
+  // try X, then Y so we slide along walls
+  const nx = p.x + mx * spd * dt;
+  if (!collidesBuildings(nx, p.y, 16)) p.x = nx;
+  const ny = p.y + my * spd * dt;
+  if (!collidesBuildings(p.x, ny, 16)) p.y = ny;
+  p.x = Math.max(16, Math.min(MAP_W - 16, p.x));
+  p.y = Math.max(16, Math.min(MAP_H - 16, p.y));
+
+  // interact prompt
+  if (state.phase === 'deliver') {
+    const d = Math.hypot(p.x - targetHouse.x, p.y - targetHouse.y);
+    state.interactPrompt = d < targetHouse.r + 30;
+  } else if (state.phase === 'flee') {
+    const d = Math.hypot(p.x - pizzeria.x, p.y - pizzeria.y);
+    state.interactPrompt = d < pizzeria.r + 30;
+  }
+
+  // demons
+  if (state.phase === 'flee') {
+    state.fleeTimer += dt;
+    // spawn more demons over time
+    const want = Math.min(5, 1 + Math.floor(state.fleeTimer / 12));
+    while (state.demons.length < want) spawnExtraDemon();
+
+    for (const d of state.demons) {
+      const dx = p.x - d.x, dy = p.y - d.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      // chase
+      d.vx = (dx / dist) * d.speed;
+      d.vy = (dy / dist) * d.speed;
+      d.angle = Math.atan2(dy, dx);
+      // try move with wall-slide
+      const ndx = d.x + d.vx * dt;
+      if (!collidesBuildings(ndx, d.y, d.radius)) d.x = ndx;
+      const ndy = d.y + d.vy * dt;
+      if (!collidesBuildings(d.x, ndy, d.radius)) d.y = ndy;
+
+      // attack
+      d.attackCd -= dt;
+      if (dist < d.radius + 22 && d.attackCd <= 0) {
+        d.attackCd = 0.6;
+        damagePlayer(15);
+        // knockback
+        p.x += dx / dist * -18;
+        p.y += dy / dist * -18;
+      }
+    }
+
+    // danger vignette pulses when demon close
+    let nearest = Infinity;
+    for (const d of state.demons) nearest = Math.min(nearest, Math.hypot(p.x - d.x, p.y - d.y));
+    if (nearest < 200) vignette.classList.add('danger');
+    else vignette.classList.remove('danger');
+  }
+
+  // camera follow with screen shake
+  state.cam.x = p.x - W/2;
+  state.cam.y = p.y - H/2;
+  state.cam.x = Math.max(0, Math.min(MAP_W - W, state.cam.x));
+  state.cam.y = Math.max(0, Math.min(MAP_H - H, state.cam.y));
+  if (state.shakeT > 0) {
+    state.shakeT -= dt;
+    state.cam.x += (Math.random()-0.5) * 14;
+    state.cam.y += (Math.random()-0.5) * 14;
+  }
+}
+
+function damagePlayer(d) {
+  state.player.hp -= d;
+  state.flashT = 0.15;
+  state.shakeT = 0.2;
+  for (let i = 0; i < 8; i++) {
+    state.particles.push({
+      x: state.player.x, y: state.player.y,
+      vx: (Math.random()-0.5)*200, vy: (Math.random()-0.5)*200,
+      life: 0.5, color: '#c00'
+    });
+  }
+  if (state.player.hp <= 0) gameOver();
+}
+
+// ---------- RENDER ----------
+function render() {
+  // bg: asphalt
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.translate(-state.cam.x, -state.cam.y);
+
+  // street pattern
+  ctx.fillStyle = '#2a2a2a';
+  for (let x = 0; x < MAP_W; x += 60) {
+    for (let y = 0; y < MAP_H; y += 60) {
+      ctx.fillRect(x, y, 56, 56);
+    }
+  }
+  // street lines
+  ctx.strokeStyle = '#553';
+  ctx.setLineDash([20, 20]);
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let y = 90; y < MAP_H; y += 360) {
+    ctx.moveTo(0, y); ctx.lineTo(MAP_W, y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // buildings
+  for (const b of buildings) {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(b.x - b.w/2 + 4, b.y - b.h/2 + 6, b.w, b.h);
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x - b.w/2, b.y - b.h/2, b.w, b.h);
+    // roof
+    ctx.fillStyle = b.roof;
+    ctx.fillRect(b.x - b.w/2, b.y - b.h/2, b.w, 18);
+    // windows
+    ctx.fillStyle = state.phase === 'flee' ? '#f60' : '#664';
+    for (let wx = b.x - b.w/2 + 18; wx < b.x + b.w/2 - 14; wx += 30) {
+      ctx.fillRect(wx, b.y - b.h/2 + 32, 14, 14);
+      ctx.fillRect(wx, b.y - b.h/2 + 64, 14, 14);
+    }
+  }
+
+  // pizzeria
+  ctx.save();
+  ctx.translate(pizzeria.x, pizzeria.y);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(-70 + 4, -50 + 6, 140, 100);
+  ctx.fillStyle = '#a32';
+  ctx.fillRect(-70, -50, 140, 100);
+  ctx.fillStyle = '#fc0';
+  ctx.fillRect(-70, -50, 140, 22);
+  ctx.fillStyle = '#000'; ctx.font = 'bold 18px Courier New'; ctx.textAlign = 'center';
+  ctx.fillText('PIZZERIA', 0, -34);
+  // door
+  ctx.fillStyle = '#542';
+  ctx.fillRect(-14, 20, 28, 30);
+  ctx.restore();
+
+  // target house (highlighted in deliver phase)
+  ctx.save();
+  ctx.translate(targetHouse.x, targetHouse.y);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(-60 + 4, -50 + 6, 120, 100);
+  ctx.fillStyle = state.phase === 'flee' ? '#400' : '#534';
+  ctx.fillRect(-60, -50, 120, 100);
+  ctx.fillStyle = '#322';
+  ctx.fillRect(-60, -50, 120, 18);
+  ctx.fillStyle = '#fc0';
+  ctx.font = 'bold 22px Courier New'; ctx.textAlign = 'center';
+  ctx.fillText('13', 0, -32);
+  // door
+  ctx.fillStyle = state.phase === 'flee' ? '#000' : '#221';
+  ctx.fillRect(-14, 20, 28, 30);
+  // glow when deliver target
+  if (state.phase === 'deliver') {
+    const pulse = 0.4 + 0.3 * Math.sin(performance.now() * 0.005);
+    ctx.strokeStyle = `rgba(255,200,0,${pulse})`;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(-64, -54, 128, 108);
+  }
+  ctx.restore();
+
+  // pizzeria glow during flee
+  if (state.phase === 'flee') {
+    const pulse = 0.4 + 0.3 * Math.sin(performance.now() * 0.005);
+    ctx.strokeStyle = `rgba(0,255,0,${pulse})`;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(pizzeria.x - 74, pizzeria.y - 54, 148, 108);
+  }
+
+  // particles
+  for (const pa of state.particles) {
+    ctx.globalAlpha = Math.max(0, pa.life * 2);
+    ctx.fillStyle = pa.color;
+    ctx.fillRect(pa.x - 1, pa.y - 1, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+
+  // demons
+  for (const d of state.demons) drawDemon(d);
+
+  // player
+  drawPlayer();
+
+  ctx.restore();
+
+  // damage flash
+  if (state.flashT > 0) {
+    ctx.fillStyle = `rgba(255,0,0,${state.flashT*2})`;
+    ctx.fillRect(0, 0, W, H);
+    state.flashT -= 1/60;
+  }
+
+  // arrow to objective
+  drawObjectiveArrow();
+
+  // interact prompt
+  if (state.interactPrompt) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(W/2 - 110, H - 80, 220, 36);
+    ctx.fillStyle = '#fc0';
+    ctx.font = 'bold 16px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('[E] ' + (state.phase === 'deliver' ? 'LIEFERN' : 'EINTRETEN'), W/2, H - 56);
+  }
+
+  // stamina bar
+  ctx.fillStyle = '#000';
+  ctx.fillRect(20, H - 30, 180, 12);
+  ctx.fillStyle = state.player.sprinting ? '#fa0' : '#0a0';
+  ctx.fillRect(20, H - 30, 180 * (state.player.stamina/100), 12);
+  ctx.strokeStyle = '#666'; ctx.lineWidth = 1;
+  ctx.strokeRect(20, H - 30, 180, 12);
+
+  // flee timer warning
+  if (state.phase === 'flee') {
+    ctx.fillStyle = '#f00'; ctx.font = 'bold 14px Courier New';
+    ctx.textAlign = 'left';
+    ctx.fillText('DÄMONEN: ' + state.demons.length, 220, H - 19);
+  }
+}
+
+function drawPlayer() {
+  const p = state.player;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath(); ctx.ellipse(2, 4, 18, 9, 0, 0, Math.PI*2); ctx.fill();
+  ctx.rotate(p.angle);
+  // scooter
+  ctx.fillStyle = '#333';
+  ctx.fillRect(-16, -5, 30, 10);
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(-14, 0, 5, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(12, 0, 5, 0, Math.PI*2); ctx.fill();
+  // body
+  ctx.fillStyle = '#c33';
+  ctx.beginPath(); ctx.arc(0, -2, 10, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.stroke();
+  // head
+  ctx.fillStyle = '#fc9';
+  ctx.beginPath(); ctx.arc(2, -3, 5, 0, Math.PI*2); ctx.fill();
+  ctx.stroke();
+  // pizza box
+  if (p.hasPizza) {
+    ctx.rotate(-p.angle); // unrotate so box sits flat
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-9, -16, 18, 8);
+    ctx.strokeStyle = '#a00'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(-9, -16, 18, 8);
+    ctx.fillStyle = '#a00';
+    ctx.font = 'bold 6px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText('PIZZA', 0, -10);
+  }
+  ctx.restore();
+}
+
+function drawDemon(d) {
+  ctx.save();
+  ctx.translate(d.x, d.y);
+  // shadow
+  ctx.fillStyle = 'rgba(120,0,0,0.5)';
+  ctx.beginPath(); ctx.ellipse(0, 8, d.radius+4, 10, 0, 0, Math.PI*2); ctx.fill();
+  // body
+  ctx.rotate(d.angle);
+  ctx.fillStyle = d.color;
+  ctx.beginPath();
+  ctx.arc(0, 0, d.radius, 0, Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle = '#400'; ctx.lineWidth = 2;
+  ctx.stroke();
+  // horns
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.moveTo(-d.radius*0.5, -d.radius*0.7);
+  ctx.lineTo(-d.radius*0.7, -d.radius*1.2);
+  ctx.lineTo(-d.radius*0.3, -d.radius*0.6);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(d.radius*0.5, -d.radius*0.7);
+  ctx.lineTo(d.radius*0.7, -d.radius*1.2);
+  ctx.lineTo(d.radius*0.3, -d.radius*0.6);
+  ctx.fill();
+  // glowing eyes
+  ctx.fillStyle = '#ff0';
+  const eyePulse = 0.7 + 0.3 * Math.sin(performance.now()*0.01);
+  ctx.globalAlpha = eyePulse;
+  ctx.beginPath(); ctx.arc(d.radius*0.4, -2, 3, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(d.radius*0.4, 6, 3, 0, Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 1;
+  // mouth/teeth
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < 4; i++) {
+    ctx.moveTo(d.radius*0.7, -6 + i*4);
+    ctx.lineTo(d.radius*0.95, -4 + i*4);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawObjectiveArrow() {
+  let tx, ty, color;
+  if (state.phase === 'deliver') {
+    tx = targetHouse.x; ty = targetHouse.y; color = '#fc0';
+  } else if (state.phase === 'flee') {
+    tx = pizzeria.x; ty = pizzeria.y; color = '#0f0';
+  } else return;
+  const p = state.player;
+  const dx = tx - p.x, dy = ty - p.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 200) return;
+  // edge of screen
+  const ang = Math.atan2(dy, dx);
+  const cx = W/2, cy = H/2;
+  const margin = 80;
+  const ex = cx + Math.cos(ang) * (Math.min(W, H)/2 - margin);
+  const ey = cy + Math.sin(ang) * (Math.min(W, H)/2 - margin);
+  ctx.save();
+  ctx.translate(ex, ey);
+  ctx.rotate(ang);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(20, 0); ctx.lineTo(-10, -10); ctx.lineTo(-10, 10);
+  ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = color;
+  ctx.font = '12px Courier New'; ctx.textAlign = 'center';
+  ctx.fillText(Math.floor(dist) + 'm', ex, ey + 22);
+}
+
+// ---------- HUD ----------
+function updateHud() {
+  const p = state.player;
+  hudEl.hp.textContent = Math.max(0, Math.floor(p.hp));
+  hudEl.pizza.textContent = p.hasPizza ? '1' : '0';
+  hudEl.cash.textContent = '$' + p.cash;
+  hudEl.phase.textContent = ({deliver:'Lieferung', flee:'FLUCHT', menu:'-', reveal:'???', end:'-'})[state.phase] || '-';
+  hudEl.obj.textContent = state.message;
+}
+
+// ---------- OVERLAY ----------
+function showOverlay(title, html, btnLabel, onClick) {
+  ovTitle.textContent = title;
+  ovText.innerHTML = html;
+  ovBtn.textContent = btnLabel;
+  ovBtn.onclick = onClick;
+  overlay.classList.add('show');
+}
+function hideOverlay() { overlay.classList.remove('show'); }
+
+// ---------- FLOW ----------
+ovBtn.onclick = startDeliver;
+function startDeliver() {
+  hideOverlay();
+  state.phase = 'deliver';
+  state.player.hp = 100;
+  state.player.hasPizza = true;
+  state.player.x = pizzeria.x;
+  state.player.y = pizzeria.y;
+  state.message = 'Liefere die Pizza an Haus 13';
+}
+function winGame() {
+  state.phase = 'end';
+  state.player.cash += 200;
+  showOverlay(
+    'ENTKOMMEN',
+    `Du erreichst die Pizzeria und schlägst die Tür zu. Geweihter Käse hält sie draußen — vorerst.<br><br>Lohn: $${state.player.cash}`,
+    'NEUE RUNDE',
+    resetGame
+  );
+}
+function gameOver() {
+  state.phase = 'end';
+  showOverlay(
+    'VERSCHLUNGEN',
+    'Die Dämonin lächelt. „Du warst köstlich, Sterblicher."<br><br>Sie behält das Trinkgeld.',
+    'NOCHMAL VERSUCHEN',
+    resetGame
+  );
+}
+function resetGame() {
+  state.demons.length = 0;
+  state.demon = null;
+  state.particles.length = 0;
+  state.fleeTimer = 0;
+  state.player.cash = 0;
+  state.player.hp = 100;
+  state.player.stamina = 100;
+  state.player.hasPizza = true;
+  vignette.classList.remove('danger');
+  startDeliver();
+}
+
+// ---------- LOOP ----------
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last)/1000);
+  last = now;
+  // particles
+  for (const pa of state.particles) {
+    pa.x += pa.vx * dt; pa.y += pa.vy * dt;
+    pa.vx *= 0.92; pa.vy *= 0.92; pa.life -= dt;
+  }
+  state.particles = state.particles.filter(pa => pa.life > 0);
+  update(dt);
+  render();
+  updateHud();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// initial overlay shown on start
+overlay.classList.add('show');
+</script>
+</body>
+</html>
