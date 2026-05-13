@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Scooter Deathmatch</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #1a1a1a; color: #eee;
+    font-family: "Courier New", monospace;
+    overflow: hidden;
+  }
+  #game {
+    display: block;
+    background: #2a3a2a;
+    margin: 0 auto;
+    cursor: crosshair;
+  }
+  #hud {
+    position: fixed; top: 8px; left: 8px;
+    background: rgba(0,0,0,0.55);
+    padding: 8px 12px; border: 2px solid #f60;
+    font-size: 14px; line-height: 1.5;
+    pointer-events: none;
+  }
+  #hud b { color: #0f0; }
+  #scoreboard {
+    position: fixed; top: 8px; right: 8px;
+    background: rgba(0,0,0,0.55);
+    padding: 8px 12px; border: 2px solid #06f;
+    font-size: 13px; line-height: 1.4;
+    min-width: 180px;
+    pointer-events: none;
+  }
+  #scoreboard h3 { margin: 0 0 4px; color: #06f; font-size: 13px; letter-spacing: 2px; }
+  #scoreboard .row { display: flex; justify-content: space-between; }
+  #scoreboard .me { color: #0f0; }
+
+  #buy {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.85);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 10;
+  }
+  #buy.show { display: flex; }
+  #buyPanel {
+    background: #111; border: 3px solid #f60;
+    padding: 24px 28px; min-width: 480px;
+    box-shadow: 0 0 40px #f60;
+  }
+  #buyPanel h2 { margin: 0 0 6px; color: #f60; letter-spacing: 4px; }
+  #buyPanel .sub { color: #aaa; margin-bottom: 14px; font-size: 13px; }
+  .weapon {
+    display: flex; justify-content: space-between; align-items: center;
+    background: #1d1d1d; padding: 10px 14px; margin: 6px 0;
+    border-left: 4px solid #444; cursor: pointer;
+    transition: background 0.1s;
+  }
+  .weapon:hover { background: #2a2a2a; border-left-color: #f60; }
+  .weapon.owned { border-left-color: #0f0; }
+  .weapon.broke { opacity: 0.45; cursor: not-allowed; }
+  .weapon .name { color: #0f0; font-weight: bold; font-size: 15px; }
+  .weapon .stats { color: #888; font-size: 11px; }
+  .weapon .price { color: #fc0; font-size: 16px; min-width: 90px; text-align: right; }
+  #buyFooter {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 14px; padding-top: 12px; border-top: 1px solid #333;
+  }
+  #buyFooter .money { color: #fc0; font-size: 22px; }
+  #startBtn {
+    background: #0a0; color: #000; border: none;
+    padding: 10px 22px; font-family: inherit; font-size: 15px;
+    font-weight: bold; cursor: pointer; letter-spacing: 2px;
+  }
+  #startBtn:hover { background: #0f0; }
+
+  #endScreen {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.85);
+    display: none; align-items: center; justify-content: center;
+    z-index: 9; flex-direction: column; gap: 16px;
+  }
+  #endScreen.show { display: flex; }
+  #endScreen h2 { color: #f60; letter-spacing: 4px; margin: 0; }
+  #endScreen p { color: #ddd; margin: 0; }
+  #nextBtn {
+    background: #f60; color: #000; border: none;
+    padding: 10px 22px; font-family: inherit; font-size: 15px;
+    font-weight: bold; cursor: pointer; letter-spacing: 2px;
+  }
+
+  #crosshair {
+    position: fixed; pointer-events: none;
+    width: 18px; height: 18px;
+    border: 2px solid #0f0;
+    transform: translate(-50%, -50%);
+    display: none;
+  }
+  a.back {
+    position: fixed; bottom: 8px; left: 8px;
+    color: #888; text-decoration: none; font-size: 12px;
+  }
+  a.back:hover { color: #f60; }
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+  HP: <b id="hHp">100</b> &nbsp; ARMOR: <b id="hArm">0</b><br>
+  WAFFE: <b id="hWeapon">Pistole</b> &nbsp; AMMO: <b id="hAmmo">0/0</b><br>
+  KILLS: <b id="hKills">0</b> &nbsp; $$$: <b id="hMoney">800</b><br>
+  RUNDE: <b id="hRound">1</b> &nbsp; ZIEL: <b id="hTarget">5 Kills</b>
+</div>
+
+<div id="scoreboard">
+  <h3>SCOREBOARD</h3>
+  <div id="sbList"></div>
+</div>
+
+<div id="crosshair"></div>
+
+<div id="buy">
+  <div id="buyPanel">
+    <h2>BUY MENU</h2>
+    <div class="sub">Kaufe Waffen zu Rundenbeginn. $300 pro Kill. Alle gegen alle.</div>
+    <div id="weaponList"></div>
+    <div id="buyFooter">
+      <div>GELD: <span class="money" id="buyMoney">$800</span></div>
+      <button id="startBtn">RUNDE STARTEN</button>
+    </div>
+  </div>
+</div>
+
+<div id="endScreen">
+  <h2 id="endTitle">RUNDE BEENDET</h2>
+  <p id="endText"></p>
+  <button id="nextBtn">NÄCHSTE RUNDE</button>
+</div>
+
+<a href="index.html" class="back">&larr; Zurück</a>
+
+<script>
+"use strict";
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 1280, H = 720;
+canvas.width = W; canvas.height = H;
+
+function resize() {
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width = (W * scale) + 'px';
+  canvas.style.height = (H * scale) + 'px';
+}
+window.addEventListener('resize', resize); resize();
+
+// ---------- Weapons ----------
+const WEAPONS = {
+  fists:   { name: 'Fäuste',   price:   0, dmg: 15, rpm: 120, mag: 999, reserve: 999, spread: 0.0,  speed: 0,   range: 40,  reload: 0,    color: '#888', auto: true,  melee: true },
+  pistol:  { name: 'Pistole',  price: 200, dmg: 22, rpm: 320, mag: 12,  reserve: 60,  spread: 0.04, speed: 900, range: 800, reload: 1.2,  color: '#ddd', auto: false },
+  smg:     { name: 'SMG',      price: 800, dmg: 16, rpm: 900, mag: 30,  reserve: 120, spread: 0.10, speed: 950, range: 700, reload: 1.8,  color: '#aaf', auto: true  },
+  shotgun: { name: 'Shotgun',  price:1200, dmg: 14, rpm: 75,  mag: 7,   reserve: 32,  spread: 0.18, speed: 850, range: 380, reload: 2.4,  color: '#f80', auto: false, pellets: 8 },
+  rifle:   { name: 'Rifle',    price:2200, dmg: 32, rpm: 600, mag: 30,  reserve: 90,  spread: 0.05, speed:1100, range:1200, reload: 2.2,  color: '#fa0', auto: true  },
+  sniper:  { name: 'Sniper',   price:3500, dmg:110, rpm: 50,  mag: 5,   reserve: 20,  spread: 0.005,speed:1400, range:1600, reload: 3.0,  color: '#0ff', auto: false }
+};
+const BUYABLE = ['pistol','smg','shotgun','rifle','sniper'];
+
+// ---------- State ----------
+const state = {
+  round: 1,
+  phase: 'buy',          // 'buy' | 'play' | 'end'
+  killTarget: 5,
+  entities: [],
+  bullets: [],
+  particles: [],
+  pickups: [],
+  player: null,
+  keys: {},
+  mouse: { x: W/2, y: H/2, down: false, clicked: false },
+  lastTime: performance.now(),
+  killfeed: []
+};
+
+const BOT_NAMES = ['Linus','Karl','Gerhard','Helga','Brigitte','Wolfgang','Heinz','Ingrid','Manfred','Renate'];
+
+// ---------- Entity ----------
+function makeEntity(opts) {
+  return Object.assign({
+    x: 0, y: 0, vx: 0, vy: 0,
+    angle: 0,
+    hp: 100, maxHp: 100, armor: 0,
+    radius: 18,
+    speed: 240,
+    isBot: false,
+    isPlayer: false,
+    dead: false,
+    name: 'Bot',
+    color: '#f00',
+    weaponKey: 'pistol',
+    ammo: 12, reserve: 60,
+    reloading: false, reloadEnd: 0,
+    lastShot: 0,
+    kills: 0,
+    money: 800,
+    inventory: { fists: true, pistol: true },
+    aiState: 'wander',
+    aiTarget: null,
+    aiTimer: 0,
+    aiAimNoise: 0,
+    flashTime: 0
+  }, opts);
+}
+
+function resetMatch() {
+  state.round = 1;
+  state.entities = [];
+  spawnPlayer();
+  for (let i = 0; i < 5; i++) spawnBot(i);
+  openBuyMenu();
+}
+
+function spawnPlayer() {
+  const p = makeEntity({
+    x: 200, y: H/2,
+    isPlayer: true,
+    name: 'YOU',
+    color: '#0c0',
+    weaponKey: 'pistol',
+    ammo: WEAPONS.pistol.mag,
+    reserve: WEAPONS.pistol.reserve,
+    money: 800,
+    inventory: { fists: true, pistol: true }
+  });
+  state.player = p;
+  state.entities.push(p);
+}
+
+function spawnBot(i) {
+  const angle = (i / 5) * Math.PI * 2;
+  const cx = W/2 + 350, cy = H/2;
+  const b = makeEntity({
+    x: cx + Math.cos(angle) * 220,
+    y: cy + Math.sin(angle) * 220,
+    isBot: true,
+    name: BOT_NAMES[i % BOT_NAMES.length],
+    color: ['#e22','#22e','#ee2','#e2e','#2ee'][i % 5],
+    weaponKey: 'pistol',
+    ammo: WEAPONS.pistol.mag,
+    reserve: WEAPONS.pistol.reserve,
+    inventory: { fists: true, pistol: true },
+    money: 800
+  });
+  state.entities.push(b);
+}
+
+// ---------- Buy Menu ----------
+const buyEl = document.getElementById('buy');
+const weaponListEl = document.getElementById('weaponList');
+const buyMoneyEl = document.getElementById('buyMoney');
+const startBtn = document.getElementById('startBtn');
+
+function openBuyMenu() {
+  state.phase = 'buy';
+  document.getElementById('crosshair').style.display = 'none';
+  renderBuyMenu();
+  buyEl.classList.add('show');
+}
+
+function renderBuyMenu() {
+  const p = state.player;
+  buyMoneyEl.textContent = '$' + p.money;
+  weaponListEl.innerHTML = '';
+  BUYABLE.forEach(key => {
+    const w = WEAPONS[key];
+    const owned = p.inventory[key];
+    const broke = !owned && p.money < w.price;
+    const row = document.createElement('div');
+    row.className = 'weapon' + (owned ? ' owned' : '') + (broke ? ' broke' : '');
+    row.innerHTML = `
+      <div>
+        <div class="name">${w.name}</div>
+        <div class="stats">DMG ${w.dmg} &middot; RPM ${w.rpm} &middot; MAG ${w.mag}${w.pellets?' &middot; PELLETS '+w.pellets:''}</div>
+      </div>
+      <div class="price">${owned ? 'OWNED' : '$' + w.price}</div>
+    `;
+    row.onclick = () => {
+      if (owned || broke) {
+        if (owned) equip(p, key);
+        return;
+      }
+      p.money -= w.price;
+      p.inventory[key] = true;
+      equip(p, key);
+      renderBuyMenu();
+    };
+    weaponListEl.appendChild(row);
+  });
+}
+
+function equip(e, key) {
+  const w = WEAPONS[key];
+  e.weaponKey = key;
+  e.ammo = w.mag;
+  e.reserve = w.reserve;
+  e.reloading = false;
+}
+
+startBtn.onclick = () => {
+  buyEl.classList.remove('show');
+  startRound();
+};
+
+function startRound() {
+  // reset entities
+  state.bullets.length = 0;
+  state.particles.length = 0;
+  state.pickups.length = 0;
+  state.killfeed.length = 0;
+  state.entities.forEach(e => {
+    e.hp = e.maxHp;
+    e.dead = false;
+    e.kills = 0;
+    e.reloading = false;
+  });
+  // Place player on left
+  state.player.x = 120; state.player.y = H/2;
+  // Place bots scattered
+  let i = 0;
+  state.entities.filter(e => e.isBot).forEach(b => {
+    b.x = 400 + Math.random() * (W - 500);
+    b.y = 80 + Math.random() * (H - 160);
+    // Bots buy random weapon scaled by round
+    const tier = Math.min(state.round - 1 + Math.floor(Math.random()*3), BUYABLE.length - 1);
+    const pick = BUYABLE[Math.max(0, tier)];
+    b.inventory[pick] = true;
+    equip(b, pick);
+    i++;
+  });
+  state.phase = 'play';
+  document.getElementById('crosshair').style.display = 'block';
+}
+
+// ---------- End Screen ----------
+const endScreen = document.getElementById('endScreen');
+const endTitle = document.getElementById('endTitle');
+const endText = document.getElementById('endText');
+const nextBtn = document.getElementById('nextBtn');
+
+function endRound(reason) {
+  state.phase = 'end';
+  const p = state.player;
+  const won = !p.dead && p.kills >= state.killTarget;
+  endTitle.textContent = won ? 'RUNDE GEWONNEN' : (p.dead ? 'DU BIST TOT' : 'RUNDE BEENDET');
+  endText.innerHTML = `Kills: <b>${p.kills}</b> &middot; Verdienst: $${p.kills * 300}<br>Gesamt: $${p.money}`;
+  endScreen.classList.add('show');
+}
+
+nextBtn.onclick = () => {
+  endScreen.classList.remove('show');
+  state.round++;
+  state.killTarget = 5 + state.round;
+  // respawn dead bots (always 5 bots)
+  state.entities = state.entities.filter(e => e.isPlayer);
+  for (let i = 0; i < 5; i++) spawnBot(i);
+  state.player.hp = state.player.maxHp;
+  state.player.dead = false;
+  openBuyMenu();
+};
+
+// ---------- Input ----------
+window.addEventListener('keydown', e => {
+  state.keys[e.key.toLowerCase()] = true;
+  if (e.key.toLowerCase() === 'r') tryReload(state.player);
+  if (e.key === '1') trySwitch(state.player, 'pistol');
+  if (e.key === '2') trySwitch(state.player, 'smg');
+  if (e.key === '3') trySwitch(state.player, 'shotgun');
+  if (e.key === '4') trySwitch(state.player, 'rifle');
+  if (e.key === '5') trySwitch(state.player, 'sniper');
+  if (e.key === 'b' && state.phase === 'end') nextBtn.click();
+});
+window.addEventListener('keyup', e => { state.keys[e.key.toLowerCase()] = false; });
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  state.mouse.x = (e.clientX - rect.left) * (W / rect.width);
+  state.mouse.y = (e.clientY - rect.top) * (H / rect.height);
+  const ch = document.getElementById('crosshair');
+  ch.style.left = e.clientX + 'px';
+  ch.style.top = e.clientY + 'px';
+});
+canvas.addEventListener('mousedown', e => { state.mouse.down = true; state.mouse.clicked = true; });
+canvas.addEventListener('mouseup', e => { state.mouse.down = false; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+function trySwitch(e, key) {
+  if (!e.inventory[key]) return;
+  if (e.weaponKey === key) return;
+  equip(e, key);
+}
+function tryReload(e) {
+  const w = WEAPONS[e.weaponKey];
+  if (w.melee) return;
+  if (e.reloading) return;
+  if (e.ammo >= w.mag) return;
+  if (e.reserve <= 0) return;
+  e.reloading = true;
+  e.reloadEnd = performance.now() + w.reload * 1000;
+}
+
+// ---------- Shooting ----------
+function fire(shooter) {
+  const w = WEAPONS[shooter.weaponKey];
+  const now = performance.now();
+  const cooldown = 60000 / w.rpm;
+  if (now - shooter.lastShot < cooldown) return;
+  if (shooter.reloading) return;
+  if (w.melee) {
+    shooter.lastShot = now;
+    // melee hit
+    for (const e of state.entities) {
+      if (e === shooter || e.dead) continue;
+      const dx = e.x - shooter.x, dy = e.y - shooter.y;
+      const d = Math.hypot(dx, dy);
+      if (d < w.range + e.radius) {
+        const ang = Math.atan2(dy, dx);
+        const da = angleDiff(ang, shooter.angle);
+        if (Math.abs(da) < 0.6) damage(e, w.dmg, shooter);
+      }
+    }
+    return;
+  }
+  if (shooter.ammo <= 0) {
+    tryReload(shooter);
+    return;
+  }
+  shooter.lastShot = now;
+  shooter.ammo--;
+  const pellets = w.pellets || 1;
+  for (let i = 0; i < pellets; i++) {
+    const spread = (Math.random() - 0.5) * 2 * w.spread;
+    const ang = shooter.angle + spread;
+    state.bullets.push({
+      x: shooter.x + Math.cos(shooter.angle) * 22,
+      y: shooter.y + Math.sin(shooter.angle) * 22,
+      vx: Math.cos(ang) * w.speed,
+      vy: Math.sin(ang) * w.speed,
+      dmg: w.dmg,
+      life: w.range / w.speed,
+      shooter,
+      color: w.color
+    });
+  }
+  // Muzzle flash
+  shooter.flashTime = now + 60;
+  // Recoil particles
+  for (let i = 0; i < 3; i++) {
+    state.particles.push({
+      x: shooter.x + Math.cos(shooter.angle) * 24,
+      y: shooter.y + Math.sin(shooter.angle) * 24,
+      vx: Math.cos(shooter.angle) * (60 + Math.random()*80) + (Math.random()-0.5)*40,
+      vy: Math.sin(shooter.angle) * (60 + Math.random()*80) + (Math.random()-0.5)*40,
+      life: 0.25, color: '#fc8'
+    });
+  }
+  if (shooter.ammo === 0) tryReload(shooter);
+}
+
+function damage(victim, dmg, attacker) {
+  if (victim.dead) return;
+  if (victim.armor > 0) {
+    const absorb = Math.min(victim.armor, dmg * 0.5);
+    victim.armor -= absorb;
+    dmg -= absorb;
+  }
+  victim.hp -= dmg;
+  // blood
+  for (let i = 0; i < 6; i++) {
+    state.particles.push({
+      x: victim.x, y: victim.y,
+      vx: (Math.random()-0.5)*200, vy: (Math.random()-0.5)*200,
+      life: 0.4, color: '#c00'
+    });
+  }
+  if (victim.hp <= 0) kill(victim, attacker);
+}
+
+function kill(victim, attacker) {
+  victim.dead = true;
+  victim.hp = 0;
+  if (attacker && attacker !== victim) {
+    attacker.kills++;
+    attacker.money += 300;
+  }
+  // body parts
+  for (let i = 0; i < 20; i++) {
+    state.particles.push({
+      x: victim.x, y: victim.y,
+      vx: (Math.random()-0.5)*400, vy: (Math.random()-0.5)*400,
+      life: 0.8, color: i%3===0 ? '#600' : '#c33'
+    });
+  }
+  // drop pickup with their weapon
+  if (!WEAPONS[victim.weaponKey].melee) {
+    state.pickups.push({
+      x: victim.x, y: victim.y, key: victim.weaponKey, life: 12
+    });
+  }
+  state.killfeed.unshift({ text: `${attacker?.name || '???'} → ${victim.name}`, t: 4 });
+  if (state.killfeed.length > 5) state.killfeed.pop();
+}
+
+// ---------- AI ----------
+function updateBot(b, dt) {
+  if (b.dead) return;
+  // pick target: nearest alive enemy
+  let best = null, bestD = Infinity;
+  for (const e of state.entities) {
+    if (e === b || e.dead) continue;
+    const d = Math.hypot(e.x - b.x, e.y - b.y);
+    if (d < bestD) { bestD = d; best = e; }
+  }
+  b.aiTarget = best;
+  b.aiTimer -= dt;
+
+  // aim
+  if (best) {
+    const desired = Math.atan2(best.y - b.y, best.x - b.x);
+    // smooth turn + noise based on skill
+    if (b.aiTimer <= 0) {
+      b.aiAimNoise = (Math.random() - 0.5) * 0.25;
+      b.aiTimer = 0.3 + Math.random() * 0.4;
+    }
+    const targetAng = desired + b.aiAimNoise;
+    b.angle = lerpAngle(b.angle, targetAng, 5 * dt);
+  }
+
+  // movement: strafe + maintain distance
+  const w = WEAPONS[b.weaponKey];
+  const idealDist = Math.min(w.range * 0.55, 400);
+  let mx = 0, my = 0;
+  if (best) {
+    const dx = best.x - b.x, dy = best.y - b.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const nx = dx / d, ny = dy / d;
+    if (d > idealDist + 30) { mx += nx; my += ny; }
+    else if (d < idealDist - 30) { mx -= nx; my -= ny; }
+    // strafe perpendicular
+    const strafe = Math.sin(performance.now() * 0.001 + b.aiTimer * 5);
+    mx += -ny * strafe * 0.7;
+    my += nx * strafe * 0.7;
+  } else {
+    mx = Math.cos(b.aiTimer * 3);
+    my = Math.sin(b.aiTimer * 3);
+  }
+  const ml = Math.hypot(mx, my) || 1;
+  b.vx = (mx / ml) * b.speed;
+  b.vy = (my / ml) * b.speed;
+
+  // shoot
+  if (best) {
+    const d = Math.hypot(best.x - b.x, best.y - b.y);
+    const angDiff = Math.abs(angleDiff(Math.atan2(best.y - b.y, best.x - b.x), b.angle));
+    if (d < w.range && angDiff < 0.15 && b.ammo > 0 && !b.reloading) {
+      // burst pattern
+      if (w.auto || Math.random() < 0.5) fire(b);
+    }
+    if (b.ammo === 0) tryReload(b);
+  }
+}
+
+function angleDiff(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI*2;
+  while (d < -Math.PI) d += Math.PI*2;
+  return d;
+}
+function lerpAngle(a, b, t) {
+  return a + angleDiff(b, a) * Math.min(1, t);
+}
+
+// ---------- Update ----------
+function update(dt) {
+  if (state.phase !== 'play') return;
+
+  // Player input
+  const p = state.player;
+  if (!p.dead) {
+    let mx = 0, my = 0;
+    if (state.keys['w']) my -= 1;
+    if (state.keys['s']) my += 1;
+    if (state.keys['a']) mx -= 1;
+    if (state.keys['d']) mx += 1;
+    const ml = Math.hypot(mx, my);
+    if (ml > 0) { mx /= ml; my /= ml; }
+    p.vx = mx * p.speed;
+    p.vy = my * p.speed;
+    p.angle = Math.atan2(state.mouse.y - p.y, state.mouse.x - p.x);
+
+    const w = WEAPONS[p.weaponKey];
+    if (state.mouse.down) {
+      if (w.auto || state.mouse.clicked) fire(p);
+    }
+    state.mouse.clicked = false;
+  } else {
+    p.vx = 0; p.vy = 0;
+  }
+
+  // AI
+  for (const e of state.entities) if (e.isBot) updateBot(e, dt);
+
+  // Move entities (scooter physics: slight inertia)
+  for (const e of state.entities) {
+    if (e.dead) continue;
+    e.x += e.vx * dt;
+    e.y += e.vy * dt;
+    e.x = Math.max(e.radius, Math.min(W - e.radius, e.x));
+    e.y = Math.max(e.radius, Math.min(H - e.radius, e.y));
+    // reload check
+    if (e.reloading && performance.now() >= e.reloadEnd) {
+      const wp = WEAPONS[e.weaponKey];
+      const need = wp.mag - e.ammo;
+      const take = Math.min(need, e.reserve);
+      e.ammo += take; e.reserve -= take;
+      e.reloading = false;
+    }
+  }
+
+  // Entity-entity collision (push)
+  for (let i = 0; i < state.entities.length; i++) {
+    for (let j = i+1; j < state.entities.length; j++) {
+      const a = state.entities[i], b = state.entities[j];
+      if (a.dead || b.dead) continue;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.hypot(dx, dy);
+      const min = a.radius + b.radius;
+      if (d > 0 && d < min) {
+        const push = (min - d) / 2;
+        const nx = dx / d, ny = dy / d;
+        a.x -= nx * push; a.y -= ny * push;
+        b.x += nx * push; b.y += ny * push;
+      }
+    }
+  }
+
+  // Bullets
+  for (const b of state.bullets) {
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+    if (b.x < 0 || b.x > W || b.y < 0 || b.y > H) b.life = 0;
+    // hit
+    for (const e of state.entities) {
+      if (e === b.shooter || e.dead) continue;
+      const dx = e.x - b.x, dy = e.y - b.y;
+      if (dx*dx + dy*dy < e.radius * e.radius) {
+        damage(e, b.dmg, b.shooter);
+        b.life = 0;
+        break;
+      }
+    }
+  }
+  state.bullets = state.bullets.filter(b => b.life > 0);
+
+  // Particles
+  for (const pa of state.particles) {
+    pa.x += pa.vx * dt;
+    pa.y += pa.vy * dt;
+    pa.vx *= 0.92; pa.vy *= 0.92;
+    pa.life -= dt;
+  }
+  state.particles = state.particles.filter(pa => pa.life > 0);
+
+  // Pickups
+  for (const pk of state.pickups) {
+    pk.life -= dt;
+    if (!p.dead) {
+      const dx = p.x - pk.x, dy = p.y - pk.y;
+      if (dx*dx + dy*dy < 30*30) {
+        if (!p.inventory[pk.key]) {
+          p.inventory[pk.key] = true;
+          equip(p, pk.key);
+        } else {
+          const wp = WEAPONS[pk.key];
+          p.reserve = Math.min(wp.reserve, p.reserve + Math.floor(wp.reserve/2));
+        }
+        pk.life = 0;
+      }
+    }
+  }
+  state.pickups = state.pickups.filter(pk => pk.life > 0);
+
+  // Killfeed timer
+  for (const k of state.killfeed) k.t -= dt;
+  state.killfeed = state.killfeed.filter(k => k.t > 0);
+
+  // End conditions
+  const aliveBots = state.entities.filter(e => e.isBot && !e.dead).length;
+  if (p.dead) endRound('dead');
+  else if (aliveBots === 0) endRound('cleared');
+  else if (p.kills >= state.killTarget) endRound('target');
+}
+
+// ---------- Render ----------
+function drawScooter(e) {
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  ctx.rotate(e.angle);
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.ellipse(2, 4, 22, 12, 0, 0, Math.PI*2); ctx.fill();
+  // scooter deck
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-18, -5, 32, 10);
+  // wheels
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(-16, 0, 5, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(14, 0, 5, 0, Math.PI*2); ctx.fill();
+  // handlebar
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(20, -8); ctx.stroke();
+  // rider body
+  ctx.fillStyle = e.color;
+  ctx.beginPath(); ctx.arc(0, -2, 10, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.stroke();
+  // head
+  ctx.fillStyle = '#fc9';
+  ctx.beginPath(); ctx.arc(4, -3, 5, 0, Math.PI*2); ctx.fill();
+  ctx.stroke();
+  // weapon
+  const w = WEAPONS[e.weaponKey];
+  if (!w.melee) {
+    ctx.fillStyle = w.color;
+    ctx.fillRect(6, -1, 22, 3);
+    ctx.fillStyle = '#222';
+    ctx.fillRect(4, -3, 6, 6);
+  }
+  // muzzle flash
+  if (performance.now() < e.flashTime) {
+    ctx.fillStyle = '#ff8';
+    ctx.beginPath();
+    ctx.moveTo(28, 0);
+    ctx.lineTo(40, -4);
+    ctx.lineTo(44, 0);
+    ctx.lineTo(40, 4);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // HP bar
+  if (!e.dead) {
+    const bw = 36;
+    ctx.fillStyle = '#400';
+    ctx.fillRect(e.x - bw/2, e.y - 28, bw, 4);
+    ctx.fillStyle = '#0f0';
+    ctx.fillRect(e.x - bw/2, e.y - 28, bw * (e.hp / e.maxHp), 4);
+    // name
+    ctx.fillStyle = e.isPlayer ? '#0f0' : '#fff';
+    ctx.font = '11px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText(e.name, e.x, e.y - 32);
+  }
+}
+
+function drawCorpse(e) {
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  ctx.rotate(e.angle + Math.PI/2);
+  ctx.fillStyle = 'rgba(80,0,0,0.5)';
+  ctx.beginPath(); ctx.ellipse(0, 0, 24, 16, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = e.color;
+  ctx.globalAlpha = 0.6;
+  ctx.beginPath(); ctx.arc(0, 0, 9, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function render() {
+  // background grid
+  ctx.fillStyle = '#243024';
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y < H; y += 40) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  // road / arena border
+  ctx.strokeStyle = '#f60'; ctx.lineWidth = 4;
+  ctx.strokeRect(4, 4, W-8, H-8);
+
+  // pickups
+  for (const pk of state.pickups) {
+    const w = WEAPONS[pk.key];
+    ctx.save();
+    ctx.translate(pk.x, pk.y);
+    const pulse = 1 + Math.sin(performance.now()*0.005) * 0.15;
+    ctx.scale(pulse, pulse);
+    ctx.fillStyle = w.color;
+    ctx.fillRect(-12, -3, 24, 6);
+    ctx.fillStyle = '#222';
+    ctx.fillRect(-15, -5, 6, 10);
+    ctx.restore();
+    ctx.fillStyle = '#fff'; ctx.font = '10px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText(w.name, pk.x, pk.y - 14);
+  }
+
+  // dead first
+  for (const e of state.entities) if (e.dead) drawCorpse(e);
+  for (const e of state.entities) if (!e.dead) drawScooter(e);
+
+  // bullets
+  for (const b of state.bullets) {
+    ctx.strokeStyle = b.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(b.x, b.y);
+    ctx.lineTo(b.x - b.vx * 0.01, b.y - b.vy * 0.01);
+    ctx.stroke();
+  }
+
+  // particles
+  for (const pa of state.particles) {
+    ctx.globalAlpha = Math.max(0, pa.life * 2);
+    ctx.fillStyle = pa.color;
+    ctx.fillRect(pa.x - 1, pa.y - 1, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+
+  // reload indicator
+  const p = state.player;
+  if (p.reloading) {
+    const w = WEAPONS[p.weaponKey];
+    const t = 1 - (p.reloadEnd - performance.now()) / (w.reload * 1000);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(p.x - 22, p.y + 22, 44, 6);
+    ctx.fillStyle = '#fc0';
+    ctx.fillRect(p.x - 22, p.y + 22, 44 * Math.max(0, Math.min(1, t)), 6);
+  }
+
+  // killfeed
+  ctx.font = '13px Courier New';
+  ctx.textAlign = 'right';
+  for (let i = 0; i < state.killfeed.length; i++) {
+    const k = state.killfeed[i];
+    ctx.globalAlpha = Math.min(1, k.t / 2);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(W - 230, 120 + i*22, 220, 20);
+    ctx.fillStyle = '#f44';
+    ctx.fillText(k.text, W - 14, 135 + i*22);
+  }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+}
+
+// ---------- HUD ----------
+function updateHud() {
+  const p = state.player;
+  const w = WEAPONS[p.weaponKey];
+  document.getElementById('hHp').textContent = Math.max(0, Math.round(p.hp));
+  document.getElementById('hArm').textContent = Math.round(p.armor);
+  document.getElementById('hWeapon').textContent = w.name + (p.reloading ? ' (RELOAD)' : '');
+  document.getElementById('hAmmo').textContent = w.melee ? '∞' : (p.ammo + '/' + p.reserve);
+  document.getElementById('hKills').textContent = p.kills;
+  document.getElementById('hMoney').textContent = '$' + p.money;
+  document.getElementById('hRound').textContent = state.round;
+  document.getElementById('hTarget').textContent = state.killTarget + ' Kills';
+  // scoreboard
+  const sb = document.getElementById('sbList');
+  const sorted = [...state.entities].sort((a,b) => b.kills - a.kills);
+  sb.innerHTML = sorted.map(e =>
+    `<div class="row ${e.isPlayer?'me':''}">
+       <span>${e.dead ? '☠ ' : ''}${e.name}</span>
+       <span>${e.kills}</span>
+     </div>`
+  ).join('');
+}
+
+// ---------- Loop ----------
+function loop(now) {
+  const dt = Math.min(0.05, (now - state.lastTime) / 1000);
+  state.lastTime = now;
+  update(dt);
+  render();
+  updateHud();
+  requestAnimationFrame(loop);
+}
+
+resetMatch();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
