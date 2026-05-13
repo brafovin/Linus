@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>COUNTER-LINUX: Global Mittelmäßig</title>
+<style>
+  body {
+    margin: 0;
+    background: #111;
+    color: #ddd;
+    font-family: "Courier New", monospace;
+    text-align: center;
+    overflow: hidden;
+  }
+  h1 {
+    color: #f60;
+    margin: 6px;
+    letter-spacing: 3px;
+    text-shadow: 2px 2px 0 #000;
+  }
+  #wrap { display: inline-block; }
+  canvas {
+    background: #2a2a2a;
+    border: 3px solid #444;
+    display: block;
+    cursor: crosshair;
+  }
+  #hud {
+    background: #000;
+    color: #0f0;
+    padding: 6px;
+    font-size: 14px;
+    border: 2px solid #333;
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+  }
+  .hp    { color: #0f0; }
+  .armor { color: #08f; }
+  .money { color: #ff0; }
+  .ammo  { color: #f80; }
+  .round { color: #fff; }
+  #msg {
+    color: #f00;
+    font-size: 22px;
+    height: 28px;
+    margin: 4px;
+    text-shadow: 1px 1px 0 #000;
+  }
+  #help {
+    font-size: 12px;
+    color: #888;
+    margin-top: 4px;
+  }
+  #buy {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    background: #111;
+    color: #fff;
+    border: 3px solid #f60;
+    padding: 16px;
+    display: none;
+    z-index: 10;
+    text-align: left;
+    font-size: 14px;
+  }
+  #buy h2 { margin: 0 0 8px; color: #f60; }
+  #buy button {
+    display: block; width: 220px;
+    margin: 4px 0; padding: 6px;
+    background: #222; color: #0f0;
+    border: 1px solid #0f0; cursor: pointer;
+    font-family: inherit;
+  }
+  #buy button:hover { background: #0f0; color: #000; }
+  #buy .close { color: #888; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>COUNTER-LINUX :: GLOBAL MITTELMÄSSIG</h1>
+  <div id="msg">&nbsp;</div>
+  <div id="wrap">
+    <canvas id="game" width="800" height="500"></canvas>
+    <div id="hud">
+      <span class="round">RUNDE <span id="round">1</span></span>
+      <span class="hp">HP <span id="hp">100</span></span>
+      <span class="armor">ARMOR <span id="armor">0</span></span>
+      <span class="money">$ <span id="money">800</span></span>
+      <span class="ammo">WAFFE: <span id="weapon">GLOCK</span> [<span id="ammo">20</span>/<span id="reserve">120</span>]</span>
+      <span>CT <span id="ctscore">0</span> : <span id="tscore">0</span> T</span>
+    </div>
+    <div id="help">WASD = laufen &nbsp;|&nbsp; MAUS = zielen &nbsp;|&nbsp; LMB = schießen &nbsp;|&nbsp; R = nachladen &nbsp;|&nbsp; B = kaufen &nbsp;|&nbsp; E = Bombe entschärfen</div>
+  </div>
+
+  <div id="buy">
+    <h2>BUY MENU</h2>
+    <button data-buy="kevlar">Kevlar Vest — $650</button>
+    <button data-buy="usp">USP-S (Pistole) — $200</button>
+    <button data-buy="deagle">Desert Eagle — $700</button>
+    <button data-buy="mp5">MP5 (SMG) — $1500</button>
+    <button data-buy="ak47">AK-47 — $2700</button>
+    <button data-buy="m4a4">M4A4 — $3100</button>
+    <button data-buy="awp">AWP (Sniper) — $4750</button>
+    <div class="close">[B] schließen</div>
+  </div>
+
+<script>
+const c = document.getElementById('game');
+const ctx = c.getContext('2d');
+const W = c.width, H = c.height;
+
+const msg = document.getElementById('msg');
+const buyEl = document.getElementById('buy');
+
+// ---------- WEAPONS ----------
+const WEAPONS = {
+  glock:  { name:'GLOCK',    dmg:18, fireRate:140, mag:20, reserve:120, spread:0.05, bulletSpd:11, cost:0 },
+  usp:    { name:'USP-S',    dmg:24, fireRate:160, mag:12, reserve:96,  spread:0.03, bulletSpd:12, cost:200 },
+  deagle: { name:'DEAGLE',   dmg:55, fireRate:280, mag:7,  reserve:35,  spread:0.04, bulletSpd:13, cost:700 },
+  mp5:    { name:'MP5',      dmg:22, fireRate:80,  mag:30, reserve:120, spread:0.07, bulletSpd:12, cost:1500 },
+  ak47:   { name:'AK-47',    dmg:36, fireRate:100, mag:30, reserve:90,  spread:0.06, bulletSpd:14, cost:2700 },
+  m4a4:   { name:'M4A4',     dmg:33, fireRate:90,  mag:30, reserve:90,  spread:0.05, bulletSpd:14, cost:3100 },
+  awp:    { name:'AWP',      dmg:115,fireRate:1400,mag:5,  reserve:30,  spread:0.005,bulletSpd:20, cost:4750 },
+};
+
+// ---------- WORLD: simple de_dust-ish map (axis-aligned walls) ----------
+const walls = [
+  // outer
+  {x:0, y:0, w:W, h:10},
+  {x:0, y:H-10, w:W, h:10},
+  {x:0, y:0, w:10, h:H},
+  {x:W-10, y:0, w:10, h:H},
+  // mid wall with gap
+  {x:380, y:0, w:40, h:180},
+  {x:380, y:260, w:40, h:240},
+  // A-site box
+  {x:600, y:80, w:120, h:30},
+  {x:680, y:110, w:40, h:120},
+  // B-site walls
+  {x:80, y:300, w:140, h:30},
+  {x:80, y:330, w:30, h:120},
+  // mid crate
+  {x:360, y:210, w:80, h:40},
+];
+
+const bombSite = {x:640, y:130, w:60, h:50};
+
+// ---------- STATE ----------
+const player = {
+  x: 60, y: H-60, r: 12, ang: 0,
+  hp: 100, armor: 0, money: 800,
+  team: 'CT',
+  weapon: 'glock',
+  ammo: {}, reserve: {},
+  lastShot: 0, reloading: 0,
+  alive: true,
+};
+for (const k in WEAPONS) {
+  player.ammo[k] = 0; player.reserve[k] = 0;
+}
+player.ammo.glock = WEAPONS.glock.mag;
+player.reserve.glock = WEAPONS.glock.reserve;
+
+let bullets = [];
+let enemies = [];
+let particles = [];
+let round = 1, ctScore = 0, tScore = 0;
+let bomb = { planted:false, x:0, y:0, timer:0, defusing:false, defuseT:0 };
+let roundTime = 0, roundLen = 115; // seconds-ish
+let roundEnding = false;
+
+const keys = {};
+const mouse = { x: W/2, y: H/2, down: false };
+
+addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  if (e.key.toLowerCase() === 'b') toggleBuy();
+  if (e.key.toLowerCase() === 'r') reload();
+});
+addEventListener('keyup',   e => keys[e.key.toLowerCase()] = false);
+c.addEventListener('mousemove', e => {
+  const r = c.getBoundingClientRect();
+  mouse.x = e.clientX - r.left;
+  mouse.y = e.clientY - r.top;
+});
+c.addEventListener('mousedown', e => { if (e.button === 0) mouse.down = true; });
+addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
+c.addEventListener('contextmenu', e => e.preventDefault());
+
+// ---------- BUY ----------
+function toggleBuy() {
+  // only allowed near spawn (first 15s of round)
+  if (roundTime > 15) {
+    flash('KAUFZEIT VORBEI');
+    return;
+  }
+  buyEl.style.display = buyEl.style.display === 'block' ? 'none' : 'block';
+}
+buyEl.addEventListener('click', e => {
+  const item = e.target.dataset.buy;
+  if (!item) return;
+  buyItem(item);
+});
+function buyItem(item) {
+  if (item === 'kevlar') {
+    if (player.money < 650) return flash('NICHT GENUG GELD');
+    player.money -= 650; player.armor = 100;
+    flash('KEVLAR GEKAUFT');
+    return;
+  }
+  const w = WEAPONS[item];
+  if (!w) return;
+  if (player.money < w.cost) return flash('NICHT GENUG GELD');
+  player.money -= w.cost;
+  player.weapon = item;
+  player.ammo[item] = w.mag;
+  player.reserve[item] = w.reserve;
+  flash(w.name + ' GEKAUFT');
+}
+
+// ---------- HELPERS ----------
+function rectVsCircle(r, cx, cy, cr) {
+  const nx = Math.max(r.x, Math.min(cx, r.x + r.w));
+  const ny = Math.max(r.y, Math.min(cy, r.y + r.h));
+  const dx = cx - nx, dy = cy - ny;
+  return dx*dx + dy*dy < cr*cr;
+}
+function lineHitsWall(x1,y1,x2,y2) {
+  // step march
+  const steps = 20;
+  for (let i = 1; i <= steps; i++) {
+    const t = i/steps;
+    const x = x1 + (x2-x1)*t, y = y1 + (y2-y1)*t;
+    for (const w of walls) {
+      if (x > w.x && x < w.x+w.w && y > w.y && y < w.y+w.h) return true;
+    }
+  }
+  return false;
+}
+function tryMove(ent, dx, dy) {
+  ent.x += dx;
+  for (const w of walls) if (rectVsCircle(w, ent.x, ent.y, ent.r)) { ent.x -= dx; break; }
+  ent.y += dy;
+  for (const w of walls) if (rectVsCircle(w, ent.x, ent.y, ent.r)) { ent.y -= dy; break; }
+}
+function flash(t) {
+  msg.textContent = t;
+  clearTimeout(flash._t);
+  flash._t = setTimeout(() => msg.textContent = ' ', 2000);
+}
+
+// ---------- ENEMIES (T-side bots) ----------
+function spawnEnemies(n) {
+  enemies = [];
+  for (let i = 0; i < n; i++) {
+    enemies.push({
+      x: W - 60 - (i%2)*30,
+      y: 60 + i*40,
+      r: 12, hp: 100, armor: 0,
+      weapon: ['glock','mp5','ak47'][Math.min(2, Math.floor(round/2))],
+      ammo: 30, reserve: 60,
+      lastShot: 0,
+      ang: Math.PI,
+      target: null,
+      planTimer: 0,
+    });
+    enemies[i].ammo = WEAPONS[enemies[i].weapon].mag;
+  }
+}
+
+// ---------- SHOOTING ----------
+function shoot() {
+  if (!player.alive) return;
+  const now = performance.now();
+  const w = WEAPONS[player.weapon];
+  if (now - player.lastShot < w.fireRate) return;
+  if (player.reloading) return;
+  if (player.ammo[player.weapon] <= 0) {
+    flash('KLICK! NACHLADEN (R)');
+    return;
+  }
+  player.lastShot = now;
+  player.ammo[player.weapon]--;
+  const spread = (Math.random()-0.5) * w.spread * 2;
+  const a = player.ang + spread;
+  bullets.push({
+    x: player.x + Math.cos(a)*16,
+    y: player.y + Math.sin(a)*16,
+    vx: Math.cos(a)*w.bulletSpd,
+    vy: Math.sin(a)*w.bulletSpd,
+    dmg: w.dmg,
+    from: 'player',
+    life: 60,
+  });
+  // muzzle particles
+  for (let i = 0; i < 4; i++) particles.push({
+    x: player.x + Math.cos(a)*18, y: player.y + Math.sin(a)*18,
+    vx: Math.cos(a)*2 + (Math.random()-0.5),
+    vy: Math.sin(a)*2 + (Math.random()-0.5),
+    life: 10, color: '#fc6',
+  });
+}
+function enemyShoot(e) {
+  const now = performance.now();
+  const w = WEAPONS[e.weapon];
+  if (now - e.lastShot < w.fireRate*1.4) return;
+  if (e.ammo <= 0) { e.ammo = w.mag; e.reserve -= w.mag; return; }
+  e.lastShot = now;
+  e.ammo--;
+  const spread = (Math.random()-0.5) * w.spread * 4;
+  const a = e.ang + spread;
+  bullets.push({
+    x: e.x + Math.cos(a)*16,
+    y: e.y + Math.sin(a)*16,
+    vx: Math.cos(a)*w.bulletSpd*0.9,
+    vy: Math.sin(a)*w.bulletSpd*0.9,
+    dmg: w.dmg * 0.7,
+    from: 'enemy',
+    life: 60,
+  });
+}
+function reload() {
+  if (player.reloading) return;
+  const w = WEAPONS[player.weapon];
+  if (player.ammo[player.weapon] >= w.mag) return;
+  if (player.reserve[player.weapon] <= 0) return flash('KEINE RESERVE');
+  player.reloading = performance.now() + 1500;
+  flash('NACHLADEN...');
+  setTimeout(() => {
+    const need = w.mag - player.ammo[player.weapon];
+    const take = Math.min(need, player.reserve[player.weapon]);
+    player.ammo[player.weapon] += take;
+    player.reserve[player.weapon] -= take;
+    player.reloading = 0;
+  }, 1500);
+}
+
+// ---------- DAMAGE ----------
+function damagePlayer(d) {
+  if (player.armor > 0) {
+    const absorbed = Math.min(player.armor, d*0.5);
+    player.armor -= absorbed;
+    d -= absorbed;
+  }
+  player.hp -= d;
+  if (player.hp <= 0 && player.alive) {
+    player.alive = false;
+    flash('DU BIST TOT');
+    endRound('T');
+  }
+}
+
+// ---------- ROUND LOGIC ----------
+function startRound() {
+  roundTime = 0;
+  roundEnding = false;
+  player.alive = true;
+  player.hp = 100;
+  player.x = 60; player.y = H-60;
+  bullets = []; particles = [];
+  bomb = { planted:false, x:0, y:0, timer:0, defusing:false, defuseT:0 };
+  spawnEnemies(2 + Math.min(3, Math.floor(round/2)));
+  flash('RUNDE ' + round + ' — GO GO GO');
+}
+function endRound(winner) {
+  if (roundEnding) return;
+  roundEnding = true;
+  if (winner === 'CT') { ctScore++; player.money += 3250; flash('CT GEWINNT'); }
+  else                 { tScore++;  player.money += 1400; flash('T GEWINNT'); }
+  setTimeout(() => {
+    round++;
+    if (ctScore >= 8 || tScore >= 8) {
+      flash((ctScore > tScore ? 'CT' : 'T') + ' GEWINNT DAS SPIEL!');
+      ctScore = 0; tScore = 0; round = 1;
+      player.money = 800;
+    }
+    startRound();
+  }, 2500);
+}
+
+// ---------- AI ----------
+function updateAI(e, dt) {
+  // line of sight
+  const dx = player.x - e.x, dy = player.y - e.y;
+  const dist = Math.hypot(dx, dy);
+  const sees = !lineHitsWall(e.x, e.y, player.x, player.y) && player.alive;
+  e.ang = Math.atan2(dy, dx);
+
+  if (sees && dist < 400) {
+    // strafe a bit
+    const sx = -Math.sin(e.ang), sy = Math.cos(e.ang);
+    const dir = (Math.floor(performance.now()/700) % 2) ? 1 : -1;
+    tryMove(e, sx*dir*1.2, sy*dir*1.2);
+    enemyShoot(e);
+  } else {
+    // patrol toward player roughly
+    if (dist > 5) {
+      tryMove(e, (dx/dist)*1.5, (dy/dist)*1.5);
+    }
+  }
+}
+
+// ---------- BOMB ----------
+function updateBomb(dt) {
+  // T-side AI plants if a bot stands in site and player is far
+  if (!bomb.planted) {
+    for (const e of enemies) {
+      if (e.x > bombSite.x && e.x < bombSite.x+bombSite.w &&
+          e.y > bombSite.y && e.y < bombSite.y+bombSite.h) {
+        e.planTimer = (e.planTimer || 0) + dt;
+        if (e.planTimer > 3) {
+          bomb.planted = true;
+          bomb.x = e.x; bomb.y = e.y;
+          bomb.timer = 40;
+          flash('BOMBE GELEGT! 40s');
+        }
+      } else { e.planTimer = 0; }
+    }
+  } else {
+    bomb.timer -= dt;
+    // defuse
+    const dist = Math.hypot(player.x - bomb.x, player.y - bomb.y);
+    if (keys['e'] && dist < 30 && player.alive) {
+      bomb.defusing = true;
+      bomb.defuseT += dt;
+      if (bomb.defuseT > 8) {
+        flash('BOMBE ENTSCHÄRFT');
+        endRound('CT');
+      }
+    } else {
+      bomb.defusing = false;
+      bomb.defuseT = Math.max(0, bomb.defuseT - dt*0.5);
+    }
+    if (bomb.timer <= 0) {
+      flash('BOOM!');
+      damagePlayer(200);
+      endRound('T');
+    }
+  }
+}
+
+// ---------- UPDATE ----------
+let last = performance.now();
+function update() {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  roundTime += dt;
+
+  // movement
+  if (player.alive) {
+    let dx = 0, dy = 0;
+    if (keys['w']) dy -= 1;
+    if (keys['s']) dy += 1;
+    if (keys['a']) dx -= 1;
+    if (keys['d']) dx += 1;
+    if (dx || dy) {
+      const l = Math.hypot(dx, dy);
+      const sp = 2.4;
+      tryMove(player, (dx/l)*sp, (dy/l)*sp);
+    }
+    player.ang = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+    if (mouse.down) shoot();
+  }
+
+  // enemies
+  for (const e of enemies) updateAI(e, dt);
+
+  // bullets
+  for (const b of bullets) {
+    b.x += b.vx; b.y += b.vy; b.life--;
+    for (const w of walls) {
+      if (b.x > w.x && b.x < w.x+w.w && b.y > w.y && b.y < w.y+w.h) {
+        b.life = 0;
+        for (let i = 0; i < 5; i++) particles.push({
+          x:b.x, y:b.y, vx:(Math.random()-0.5)*2, vy:(Math.random()-0.5)*2,
+          life:15, color:'#aaa'
+        });
+        break;
+      }
+    }
+    if (b.from === 'player') {
+      for (const e of enemies) {
+        if (e.hp <= 0) continue;
+        if (Math.hypot(b.x - e.x, b.y - e.y) < e.r) {
+          e.hp -= b.dmg;
+          b.life = 0;
+          for (let i = 0; i < 6; i++) particles.push({
+            x:b.x, y:b.y, vx:(Math.random()-0.5)*3, vy:(Math.random()-0.5)*3,
+            life:15, color:'#f00'
+          });
+          if (e.hp <= 0) { player.money += 300; flash('+ $300'); }
+        }
+      }
+    } else {
+      if (player.alive && Math.hypot(b.x - player.x, b.y - player.y) < player.r) {
+        damagePlayer(b.dmg);
+        b.life = 0;
+      }
+    }
+  }
+  bullets = bullets.filter(b => b.life > 0);
+
+  // dead enemies cleanup + win check
+  enemies = enemies.filter(e => e.hp > 0);
+  if (player.alive && enemies.length === 0 && !bomb.planted) {
+    endRound('CT');
+  }
+
+  // particles
+  for (const p of particles) { p.x += p.vx; p.y += p.vy; p.life--; }
+  particles = particles.filter(p => p.life > 0);
+
+  updateBomb(dt);
+
+  // HUD
+  document.getElementById('hp').textContent = Math.max(0, Math.floor(player.hp));
+  document.getElementById('armor').textContent = Math.max(0, Math.floor(player.armor));
+  document.getElementById('money').textContent = player.money;
+  document.getElementById('weapon').textContent = WEAPONS[player.weapon].name;
+  document.getElementById('ammo').textContent = player.ammo[player.weapon];
+  document.getElementById('reserve').textContent = player.reserve[player.weapon];
+  document.getElementById('round').textContent = round;
+  document.getElementById('ctscore').textContent = ctScore;
+  document.getElementById('tscore').textContent = tScore;
+}
+
+// ---------- RENDER ----------
+function render() {
+  // floor
+  ctx.fillStyle = '#3a3530';
+  ctx.fillRect(0, 0, W, H);
+
+  // floor pattern
+  ctx.strokeStyle = '#2e2925';
+  for (let i = 0; i < W; i += 40) {
+    ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, H); ctx.stroke();
+  }
+  for (let i = 0; i < H; i += 40) {
+    ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(W, i); ctx.stroke();
+  }
+
+  // bomb site marker
+  ctx.fillStyle = 'rgba(255,80,0,0.15)';
+  ctx.fillRect(bombSite.x, bombSite.y, bombSite.w, bombSite.h);
+  ctx.strokeStyle = '#f60';
+  ctx.setLineDash([4,4]);
+  ctx.strokeRect(bombSite.x, bombSite.y, bombSite.w, bombSite.h);
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#f60';
+  ctx.font = 'bold 16px monospace';
+  ctx.fillText('A', bombSite.x + 24, bombSite.y + 30);
+
+  // walls
+  ctx.fillStyle = '#5a4a3a';
+  for (const w of walls) {
+    ctx.fillRect(w.x, w.y, w.w, w.h);
+    ctx.strokeStyle = '#322820';
+    ctx.strokeRect(w.x, w.y, w.w, w.h);
+  }
+
+  // bomb
+  if (bomb.planted) {
+    const t = Math.floor(performance.now()/200) % 2;
+    ctx.fillStyle = t ? '#f00' : '#600';
+    ctx.fillRect(bomb.x-6, bomb.y-6, 12, 12);
+    ctx.fillStyle = '#ff0';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText(Math.max(0, bomb.timer).toFixed(1), bomb.x-10, bomb.y-10);
+    if (bomb.defusing) {
+      ctx.fillStyle = '#0ff';
+      ctx.fillText('DEFUSE ' + bomb.defuseT.toFixed(1) + '/8', 20, 30);
+    }
+  }
+
+  // particles
+  for (const p of particles) {
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x-1, p.y-1, 2, 2);
+  }
+
+  // bullets
+  ctx.fillStyle = '#ff0';
+  for (const b of bullets) ctx.fillRect(b.x-1, b.y-1, 3, 3);
+
+  // enemies (T = orange/brown)
+  for (const e of enemies) {
+    ctx.fillStyle = '#c60';
+    ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#000'; ctx.stroke();
+    // gun
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(e.x, e.y);
+    ctx.lineTo(e.x + Math.cos(e.ang)*18, e.y + Math.sin(e.ang)*18);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    // hp bar
+    ctx.fillStyle = '#400';
+    ctx.fillRect(e.x-12, e.y-20, 24, 3);
+    ctx.fillStyle = '#0f0';
+    ctx.fillRect(e.x-12, e.y-20, 24 * (e.hp/100), 3);
+  }
+
+  // player (CT = blue)
+  if (player.alive) {
+    ctx.fillStyle = '#48a';
+    ctx.beginPath(); ctx.arc(player.x, player.y, player.r, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#000'; ctx.stroke();
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(player.x, player.y);
+    ctx.lineTo(player.x + Math.cos(player.ang)*18, player.y + Math.sin(player.ang)*18);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+
+  // crosshair
+  ctx.strokeStyle = '#0f0';
+  ctx.beginPath();
+  ctx.moveTo(mouse.x-8, mouse.y); ctx.lineTo(mouse.x-2, mouse.y);
+  ctx.moveTo(mouse.x+2, mouse.y); ctx.lineTo(mouse.x+8, mouse.y);
+  ctx.moveTo(mouse.x, mouse.y-8); ctx.lineTo(mouse.x, mouse.y-2);
+  ctx.moveTo(mouse.x, mouse.y+2); ctx.lineTo(mouse.x, mouse.y+8);
+  ctx.stroke();
+
+  // round timer
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px monospace';
+  ctx.fillText('T-' + Math.max(0, roundLen - Math.floor(roundTime)) + 's', W-70, 22);
+
+  // buyzone hint
+  if (roundTime < 15) {
+    ctx.fillStyle = 'rgba(0,255,0,0.08)';
+    ctx.fillRect(10, H-110, 110, 100);
+    ctx.fillStyle = '#0f0';
+    ctx.font = '11px monospace';
+    ctx.fillText('BUY ZONE [B]', 20, H-90);
+  }
+}
+
+function loop() {
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+
+startRound();
+loop();
+</script>
+</body>
+</html>
