@@ -50,6 +50,20 @@
     font-family: inherit; font-weight: bold;
   }
   #start button:hover { background: #fa0; }
+  .modes { display: flex; gap: 12px; justify-content: center; margin: 10px 0; }
+  .mode {
+    flex: 1; padding: 12px; background: #222; color: #0f0;
+    border: 2px solid #444; cursor: pointer; font-family: inherit;
+    font-size: 13px; line-height: 1.4;
+  }
+  .mode.active { border-color: #f60; background: #2a1a0a; color: #f60; }
+  .mode b { display: block; font-size: 15px; color: inherit; margin-bottom: 4px; }
+  #killfeed {
+    position: absolute; top: 60px; right: 16px;
+    color: #f44; font-size: 13px; line-height: 1.4;
+    text-align: right; pointer-events: none;
+    text-shadow: 1px 1px 0 #000;
+  }
   #buy {
     position: absolute; top: 50%; left: 50%;
     transform: translate(-50%, -50%);
@@ -87,6 +101,16 @@
   <p><b>WASD</b> laufen &nbsp; <b>MAUS</b> umschauen &nbsp; <b>LMB</b> schießen</p>
   <p><b>R</b> nachladen &nbsp; <b>B</b> kaufen (nur in den ersten 15s) &nbsp; <b>SHIFT</b> sprinten</p>
   <p><b>SPACE</b> springen &nbsp; <b>E</b> entschärfen &nbsp; <b>ESC</b> Maus freigeben</p>
+  <div class="modes">
+    <div class="mode active" data-mode="bomb">
+      <b>BOMB MODE</b>
+      CT vs T &middot; Site verteidigen / Bombe legen
+    </div>
+    <div class="mode" data-mode="ffa">
+      <b>ALLE GEGEN ALLE</b>
+      Free-for-All &middot; $300 pro Kill &middot; 10 Kills = Sieg
+    </div>
+  </div>
   <p style="color:#f60">Klick zum Starten — Pointer-Lock wird aktiviert</p>
   <button id="startBtn">START</button>
 </div>
@@ -102,8 +126,11 @@
   <span class="armor">ARMOR <span id="armor">0</span></span>
   <span class="money">$ <span id="money">800</span></span>
   <span class="ammo">WAFFE: <span id="weapon">GLOCK</span> [<span id="ammo">20</span>/<span id="reserve">120</span>]</span>
-  <span>CT <span id="ctscore">0</span> : <span id="tscore">0</span> T</span>
+  <span id="bombScore">CT <span id="ctscore">0</span> : <span id="tscore">0</span> T</span>
+  <span id="ffaScore" style="display:none">KILLS <span id="pkills">0</span>/10</span>
 </div>
+
+<div id="killfeed"></div>
 
 <div id="buy">
   <h2>BUY MENU</h2>
@@ -300,23 +327,21 @@ camera.add(muzzle);
 
 // ---------- ENEMIES ----------
 const enemies = [];
-function makeEnemy(x, z, weapon, site) {
+function makeEnemy(x, z, weapon, site, opts = {}) {
   const g = new THREE.Group();
-  // body
+  const bodyColor = opts.color ?? 0xcc6600;
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(0.6, 1.4, 0.4),
-    new THREE.MeshStandardMaterial({ color: 0xcc6600 })
+    new THREE.MeshStandardMaterial({ color: bodyColor })
   );
   body.position.y = 0.7 + 0.4;
   body.castShadow = true;
-  // head
   const head = new THREE.Mesh(
     new THREE.BoxGeometry(0.4, 0.4, 0.4),
     new THREE.MeshStandardMaterial({ color: 0xddaa88 })
   );
   head.position.y = 1.4 + 0.4 + 0.2;
   head.castShadow = true;
-  // gun stub
   const eg = new THREE.Mesh(
     new THREE.BoxGeometry(0.08, 0.08, 0.3),
     new THREE.MeshStandardMaterial({ color: 0x222222 })
@@ -330,8 +355,12 @@ function makeEnemy(x, z, weapon, site) {
     weapon, ammo: WEAPONS[weapon].mag, lastShot: 0,
     targetSite: site, flashed: 0, planTimer: 0,
     eg,
+    name: opts.name || 'Bot',
+    kills: 0, money: 800,
+    target: null,
   };
   enemies.push(e);
+  return e;
 }
 
 // ---------- BULLETS / EFFECTS ----------
@@ -350,6 +379,17 @@ let bomb = { planted: false, x: 0, z: 0, site: null, timer: 0, defuseT: 0, mesh:
 // ---------- STATE ----------
 let round = 1, ctScore = 0, tScore = 0;
 let roundTime = 0, roundLen = 115, roundEnding = false;
+let gameMode = 'bomb'; // 'bomb' | 'ffa'
+const FFA_KILL_TARGET = 10;
+player.kills = 0;
+const BOT_COLORS = [0xcc2222, 0x2266ee, 0xeecc22, 0xee22cc, 0x22eecc, 0xffaa33, 0x88ff22];
+const BOT_NAMES = ['Linus','Karl','Helga','Wolfgang','Brigitte','Heinz','Gerhard','Renate'];
+const killfeedEl = document.getElementById('killfeed');
+const killfeed = [];
+function pushKillfeed(text) {
+  killfeed.unshift({ text, t: 4 });
+  if (killfeed.length > 5) killfeed.pop();
+}
 
 // ---------- INPUT ----------
 const keys = {};
@@ -359,7 +399,27 @@ const startBtn = document.getElementById('startBtn');
 const hudEl = document.getElementById('hud');
 const buyEl = document.getElementById('buy');
 
+document.querySelectorAll('.mode').forEach(el => {
+  el.addEventListener('click', () => {
+    document.querySelectorAll('.mode').forEach(m => m.classList.remove('active'));
+    el.classList.add('active');
+    gameMode = el.dataset.mode;
+  });
+});
+
 startBtn.addEventListener('click', () => {
+  // apply chosen mode + reset stats
+  const active = document.querySelector('.mode.active');
+  gameMode = active ? active.dataset.mode : 'bomb';
+  player.kills = 0; ctScore = 0; tScore = 0; round = 1; player.money = 800;
+  document.getElementById('bombScore').style.display = gameMode === 'bomb' ? '' : 'none';
+  document.getElementById('ffaScore').style.display  = gameMode === 'ffa'  ? '' : 'none';
+  // hide bombsite labels in FFA
+  for (const s of bombSites) s.mesh.visible = gameMode === 'bomb';
+  // hard reset: clear existing enemies & bomb before first round
+  for (const e of enemies) scene.remove(e.mesh);
+  enemies.length = 0;
+  startRound();
   renderer.domElement.requestPointerLock();
 });
 document.addEventListener('pointerlockchange', () => {
@@ -484,14 +544,16 @@ function shoot() {
     tracer(muzzleWorld, h.point);
     const e = h.object.userData.enemy;
     if (e && e.hp > 0) {
-      // headshot if hit object is the head (3rd child = index varies, check by y)
       const localY = h.point.y - e.mesh.position.y;
       const isHead = localY > 1.7;
       const dmg = isHead ? w.dmg * 2.5 : w.dmg;
+      const wasAlive = e.hp > 0;
       e.hp -= dmg;
-      if (e.hp <= 0) {
+      if (e.hp <= 0 && wasAlive) {
+        player.kills++;
         player.money += isHead ? 400 : 300;
         flashMsg(isHead ? '+ $400 HEADSHOT' : '+ $300');
+        pushKillfeed(`YOU → ${e.name}`);
         scene.remove(e.mesh);
       }
     }
@@ -535,29 +597,45 @@ function damagePlayer(d) {
 }
 
 // ---------- AI ----------
-function enemyShoot(e) {
+function enemyShoot(e, targetPos, targetEntity) {
   const now = performance.now();
   const w = WEAPONS[e.weapon];
   if (now - e.lastShot < w.fireRate * 1.6) return;
   e.lastShot = now;
-  // ray from enemy to player
   const from = new THREE.Vector3(e.mesh.position.x, 1.5, e.mesh.position.z);
-  const to = player.pos.clone();
+  const to = targetPos.clone();
   const dir = to.clone().sub(from).normalize();
   dir.x += (Math.random()-0.5)*w.spread*2;
   dir.y += (Math.random()-0.5)*w.spread*2;
   dir.z += (Math.random()-0.5)*w.spread*2;
   dir.normalize();
-  // wall check
   raycaster.set(from, dir);
   const objs = walls.map(x => x.mesh);
   const hits = raycaster.intersectObjects(objs, false);
-  const dist = from.distanceTo(player.pos);
+  const dist = from.distanceTo(targetPos);
   const hitsWallFirst = hits.length > 0 && hits[0].distance < dist;
-  tracer(from, hitsWallFirst ? hits[0].point : player.pos.clone(), 0xff4444);
-  if (!hitsWallFirst) {
-    // small accuracy chance
-    if (Math.random() < 0.55) damagePlayer(w.dmg * 0.6);
+  tracer(from, hitsWallFirst ? hits[0].point : targetPos.clone(), 0xff4444);
+  if (hitsWallFirst) return;
+  if (Math.random() >= 0.55) return;
+  if (targetEntity === player) {
+    damagePlayer(w.dmg * 0.6);
+  } else if (targetEntity) {
+    damageEnemy(targetEntity, w.dmg * 0.6, e);
+  }
+}
+
+function damageEnemy(victim, dmg, attacker) {
+  if (victim.hp <= 0) return;
+  victim.hp -= dmg;
+  if (victim.hp <= 0) {
+    if (attacker === player) {
+      player.kills++; player.money += 300;
+      flashMsg('+ $300');
+    } else if (attacker) {
+      attacker.kills++; attacker.money += 300;
+    }
+    pushKillfeed(`${attacker === player ? 'YOU' : (attacker?.name || '???')} → ${victim.name}`);
+    scene.remove(victim.mesh);
   }
 }
 
@@ -573,24 +651,69 @@ function lineHitsAnyWall(ax, az, bx, bz) {
   return hits.length > 0;
 }
 
+function pickFfaTarget(e) {
+  let best = null, bestD = Infinity, bestPos = null, bestEntity = null;
+  if (player.alive) {
+    const d = Math.hypot(player.pos.x - e.mesh.position.x, player.pos.z - e.mesh.position.z);
+    if (!lineHitsAnyWall(e.mesh.position.x, e.mesh.position.z, player.pos.x, player.pos.z)) {
+      bestD = d; bestPos = player.pos.clone(); bestEntity = player;
+    }
+  }
+  for (const o of enemies) {
+    if (o === e || o.hp <= 0) continue;
+    const d = Math.hypot(o.mesh.position.x - e.mesh.position.x, o.mesh.position.z - e.mesh.position.z);
+    if (d >= bestD) continue;
+    if (lineHitsAnyWall(e.mesh.position.x, e.mesh.position.z, o.mesh.position.x, o.mesh.position.z)) continue;
+    bestD = d;
+    bestPos = new THREE.Vector3(o.mesh.position.x, 1.5, o.mesh.position.z);
+    bestEntity = o;
+  }
+  return bestEntity ? { entity: bestEntity, pos: bestPos, dist: bestD } : null;
+}
+
 function updateAI(e, dt) {
   if (e.hp <= 0) return;
   if (e.flashed > 0) { e.flashed -= dt; return; }
 
+  if (gameMode === 'ffa') {
+    const t = pickFfaTarget(e);
+    if (t && t.dist < 40) {
+      const dx = t.pos.x - e.mesh.position.x;
+      const dz = t.pos.z - e.mesh.position.z;
+      e.mesh.rotation.y = Math.atan2(dx, dz);
+      enemyShoot(e, t.pos, t.entity);
+      const sdir = (Math.floor(performance.now()/700 + e.mesh.id) % 2) ? 1 : -1;
+      moveEntity(e.mesh.position, Math.cos(e.mesh.rotation.y)*sdir*1.2*dt, Math.sin(e.mesh.rotation.y)*sdir*1.2*dt);
+      // close gap if too far
+      if (t.dist > 18) {
+        const dd = Math.hypot(dx, dz) || 1;
+        moveEntity(e.mesh.position, (dx/dd)*2.5*dt, (dz/dd)*2.5*dt);
+      }
+    } else {
+      // wander
+      e.wanderTimer = (e.wanderTimer || 0) - dt;
+      if (e.wanderTimer <= 0) {
+        e.wanderAng = Math.random() * Math.PI * 2;
+        e.wanderTimer = 1 + Math.random() * 2;
+      }
+      e.mesh.rotation.y = e.wanderAng;
+      moveEntity(e.mesh.position, Math.sin(e.wanderAng)*2.5*dt, Math.cos(e.wanderAng)*2.5*dt);
+    }
+    return;
+  }
+
+  // BOMB MODE (original behavior)
   const dx = player.pos.x - e.mesh.position.x;
   const dz = player.pos.z - e.mesh.position.z;
   const dist = Math.hypot(dx, dz);
   const sees = player.alive && !lineHitsAnyWall(e.mesh.position.x, e.mesh.position.z, player.pos.x, player.pos.z);
 
-  // face player when in combat, else face site
   if (sees && dist < 35) {
     e.mesh.rotation.y = Math.atan2(dx, dz);
-    enemyShoot(e);
-    // strafe
+    enemyShoot(e, player.pos, player);
     const sdir = (Math.floor(performance.now()/700) % 2) ? 1 : -1;
     moveEntity(e.mesh.position, Math.cos(e.mesh.rotation.y)*sdir*1.2*dt, Math.sin(e.mesh.rotation.y)*sdir*1.2*dt);
   } else if (!bomb.planted) {
-    // go to bombsite
     const s = bombSites[e.targetSite];
     const tdx = s.x - e.mesh.position.x;
     const tdz = s.z - e.mesh.position.z;
@@ -620,6 +743,7 @@ function collidesWalls(x, z, r) {
 
 // ---------- BOMB ----------
 function updateBomb(dt) {
+  if (gameMode === 'ffa') return;
   if (!bomb.planted) {
     for (const e of enemies) {
       if (e.hp <= 0) continue;
@@ -677,24 +801,51 @@ function startRound() {
   roundTime = 0; roundEnding = false;
   player.alive = true; player.hp = 100;
   player.pos.set(-25, 1.7, 0); player.vel.set(0,0,0);
-  // clear enemies + bomb
+  if (gameMode === 'ffa') player.kills = 0;
   for (const e of enemies) scene.remove(e.mesh);
   enemies.length = 0;
   if (bomb.mesh) scene.remove(bomb.mesh);
   bomb = { planted: false, x:0, z:0, site:null, timer:0, defuseT:0, mesh:null };
-  // spawn enemies
-  const n = 2 + Math.min(3, Math.floor(round/2));
-  const wTier = round >= 4 ? 'ak47' : (round >= 2 ? 'mp5' : 'glock');
-  for (let i = 0; i < n; i++) {
-    const upper = i % 2 === 0;
-    makeEnemy(20 + (i*0.5), upper ? -8 - i*2 : 8 + i*2, wTier, upper ? 0 : 1);
+
+  if (gameMode === 'ffa') {
+    const n = 5;
+    const tier = round >= 4 ? 'ak47' : (round >= 2 ? 'mp5' : 'glock');
+    for (let i = 0; i < n; i++) {
+      const ang = (i / n) * Math.PI * 2;
+      const r = 18;
+      const x = Math.cos(ang) * r;
+      const z = Math.sin(ang) * r;
+      makeEnemy(x, z, tier, 0, {
+        color: BOT_COLORS[i % BOT_COLORS.length],
+        name: BOT_NAMES[i % BOT_NAMES.length]
+      });
+    }
+    flashMsg('FFA RUNDE ' + round + ' — 10 KILLS = SIEG');
+  } else {
+    const n = 2 + Math.min(3, Math.floor(round/2));
+    const wTier = round >= 4 ? 'ak47' : (round >= 2 ? 'mp5' : 'glock');
+    for (let i = 0; i < n; i++) {
+      const upper = i % 2 === 0;
+      makeEnemy(20 + (i*0.5), upper ? -8 - i*2 : 8 + i*2, wTier, upper ? 0 : 1);
+    }
+    flashMsg('RUNDE ' + round + ' — GO');
   }
-  flashMsg('RUNDE ' + round + ' — GO');
 }
 
 function endRound(winner) {
   if (roundEnding) return;
   roundEnding = true;
+  if (gameMode === 'ffa') {
+    if (winner === 'PLAYER') flashMsg('DU GEWINNST DIE RUNDE — ' + player.kills + ' KILLS');
+    else flashMsg('DU BIST TOT — ' + player.kills + ' KILLS');
+    player.money += player.kills * 0; // kills already paid out live
+    setTimeout(() => {
+      round++;
+      if (round > 5) { round = 1; player.money = 800; flashMsg('NEUES MATCH'); }
+      startRound();
+    }, 2500);
+    return;
+  }
   if (winner === 'CT') { ctScore++; player.money += 3250; flashMsg('CT GEWINNT'); }
   else                 { tScore++;  player.money += 1400; flashMsg('T GEWINNT'); }
   setTimeout(() => {
@@ -756,6 +907,8 @@ function updateHUD() {
   document.getElementById('round').textContent = round;
   document.getElementById('ctscore').textContent = ctScore;
   document.getElementById('tscore').textContent = tScore;
+  const pk = document.getElementById('pkills');
+  if (pk) pk.textContent = player.kills;
 }
 
 // ---------- LOOP ----------
@@ -773,10 +926,23 @@ function loop() {
   // cleanup dead
   for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].hp <= 0) enemies.splice(i, 1);
 
-  // round end if no T left
-  if (player.alive && enemies.length === 0 && !bomb.planted) endRound('CT');
+  if (gameMode === 'ffa') {
+    if (!player.alive) endRound('DEAD');
+    else if (player.kills >= FFA_KILL_TARGET) endRound('PLAYER');
+    else if (enemies.length === 0) endRound('PLAYER');
+  } else {
+    if (player.alive && enemies.length === 0 && !bomb.planted) endRound('CT');
+  }
 
   updateBomb(dt);
+
+  // killfeed render
+  for (const k of killfeed) k.t -= dt;
+  while (killfeed.length && killfeed[killfeed.length-1].t <= 0) killfeed.pop();
+  killfeedEl.innerHTML = killfeed.map(k => {
+    const o = Math.min(1, k.t / 1.5);
+    return `<div style="opacity:${o}">${k.text}</div>`;
+  }).join('');
 
   // tracer life
   for (let i = bulletTracers.length - 1; i >= 0; i--) {
@@ -794,7 +960,6 @@ function loop() {
   requestAnimationFrame(loop);
 }
 
-startRound();
 loop();
 </script>
 </body>
