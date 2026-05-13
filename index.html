@@ -52,7 +52,10 @@
     <div id="hud">
       PUNKTE: <span id="score">0</span> &nbsp;|&nbsp;
       SPEED: <span id="speed">0</span> &nbsp;|&nbsp;
-      <span class="blink">PFEILTASTEN ODER A/D !!!</span>
+      <span style="color:#ff0;background:#900;padding:2px 6px;border:2px dashed #fff;">
+        <span id="kmh">0</span> KM/H
+      </span> &nbsp;|&nbsp;
+      <span class="blink">PFEILE / A,D !!!</span>
     </div>
   </div>
 
@@ -147,7 +150,7 @@ function update() {
 
   if (keys['arrowleft'] || keys['a']) player.x -= 4;
   if (keys['arrowright'] || keys['d']) player.x += 4;
-  if (keys['arrowup'] || keys['w']) speed = Math.min(speed + 0.05, 10);
+  if (keys['arrowup'] || keys['w']) speed = Math.min(speed + 0.15, 10);
   if (keys['arrowdown'] || keys['s']) speed = Math.max(speed - 0.1, 2);
 
   player.x = Math.max(44, Math.min(W - 44 - player.w, player.x));
@@ -167,8 +170,11 @@ function update() {
   }
 
   score += Math.floor(speed);
+  // Skala: speed 10 (max) entspricht 10000 km/h. Realismus: Null.
+  const kmh = Math.round(speed * 1000);
   document.getElementById('score').textContent = score;
   document.getElementById('speed').textContent = speed.toFixed(1);
+  document.getElementById('kmh').textContent = kmh.toLocaleString('de-DE');
 }
 
 function render() {
