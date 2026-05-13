@@ -90,7 +90,7 @@
       <span class="ammo">WAFFE: <span id="weapon">GLOCK</span> [<span id="ammo">20</span>/<span id="reserve">120</span>]</span>
       <span>CT <span id="ctscore">0</span> : <span id="tscore">0</span> T</span>
     </div>
-    <div id="help">WASD = laufen &nbsp;|&nbsp; MAUS = zielen &nbsp;|&nbsp; LMB = schießen &nbsp;|&nbsp; R = nachladen &nbsp;|&nbsp; B = kaufen &nbsp;|&nbsp; E = Bombe entschärfen</div>
+    <div id="help">WASD laufen &nbsp;|&nbsp; MAUS zielen &nbsp;|&nbsp; LMB schießen &nbsp;|&nbsp; R nachladen &nbsp;|&nbsp; B kaufen &nbsp;|&nbsp; E entschärfen &nbsp;|&nbsp; G HE &nbsp;|&nbsp; F Flash &nbsp;|&nbsp; X Messer &nbsp;|&nbsp; TAB Scoreboard</div>
   </div>
 
   <div id="buy">
@@ -102,6 +102,8 @@
     <button data-buy="ak47">AK-47 — $2700</button>
     <button data-buy="m4a4">M4A4 — $3100</button>
     <button data-buy="awp">AWP (Sniper) — $4750</button>
+    <button data-buy="he">HE Granate — $300</button>
+    <button data-buy="flash">Flashbang — $200</button>
     <div class="close">[B] schließen</div>
   </div>
 
@@ -134,17 +136,20 @@ const walls = [
   // mid wall with gap
   {x:380, y:0, w:40, h:180},
   {x:380, y:260, w:40, h:240},
-  // A-site box
-  {x:600, y:80, w:120, h:30},
-  {x:680, y:110, w:40, h:120},
-  // B-site walls
-  {x:80, y:300, w:140, h:30},
-  {x:80, y:330, w:30, h:120},
+  // A-site cover
+  {x:600, y:80, w:120, h:20},
+  {x:700, y:100, w:20, h:80},
+  // B-site cover
+  {x:80, y:380, w:140, h:20},
+  {x:80, y:300, w:20, h:80},
   // mid crate
   {x:360, y:210, w:80, h:40},
 ];
 
-const bombSite = {x:640, y:130, w:60, h:50};
+const bombSites = [
+  {name:'A', x:620, y:120, w:80, h:60},
+  {name:'B', x:100, y:300, w:80, h:60},
+];
 
 // ---------- STATE ----------
 const player = {
@@ -165,20 +170,37 @@ player.reserve.glock = WEAPONS.glock.reserve;
 let bullets = [];
 let enemies = [];
 let particles = [];
+let grenades = [];
+let kills = 0, deaths = 0;
+let flashAmount = 0; // 0..1 screen white-out
 let round = 1, ctScore = 0, tScore = 0;
-let bomb = { planted:false, x:0, y:0, timer:0, defusing:false, defuseT:0 };
+let bomb = { planted:false, x:0, y:0, site:null, timer:0, defusing:false, defuseT:0 };
 let roundTime = 0, roundLen = 115; // seconds-ish
 let roundEnding = false;
+let knifeFlash = 0;
+let showScoreboard = false;
+
+// inventory
+player.nades = { he: 0, flash: 0 };
 
 const keys = {};
 const mouse = { x: W/2, y: H/2, down: false };
 
 addEventListener('keydown', e => {
-  keys[e.key.toLowerCase()] = true;
-  if (e.key.toLowerCase() === 'b') toggleBuy();
-  if (e.key.toLowerCase() === 'r') reload();
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+  if (k === 'b') toggleBuy();
+  if (k === 'r') reload();
+  if (k === 'g') throwNade('he');
+  if (k === 'f') throwNade('flash');
+  if (k === 'x') knifeAttack();
+  if (k === 'tab') { showScoreboard = true; e.preventDefault(); }
 });
-addEventListener('keyup',   e => keys[e.key.toLowerCase()] = false);
+addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  keys[k] = false;
+  if (k === 'tab') { showScoreboard = false; e.preventDefault(); }
+});
 c.addEventListener('mousemove', e => {
   const r = c.getBoundingClientRect();
   mouse.x = e.clientX - r.left;
@@ -209,6 +231,18 @@ function buyItem(item) {
     flash('KEVLAR GEKAUFT');
     return;
   }
+  if (item === 'he') {
+    if (player.money < 300) return flash('NICHT GENUG GELD');
+    if (player.nades.he >= 1) return flash('MAX 1 HE');
+    player.money -= 300; player.nades.he++;
+    flash('HE GRANATE GEKAUFT'); return;
+  }
+  if (item === 'flash') {
+    if (player.money < 200) return flash('NICHT GENUG GELD');
+    if (player.nades.flash >= 2) return flash('MAX 2 FLASH');
+    player.money -= 200; player.nades.flash++;
+    flash('FLASHBANG GEKAUFT'); return;
+  }
   const w = WEAPONS[item];
   if (!w) return;
   if (player.money < w.cost) return flash('NICHT GENUG GELD');
@@ -217,6 +251,79 @@ function buyItem(item) {
   player.ammo[item] = w.mag;
   player.reserve[item] = w.reserve;
   flash(w.name + ' GEKAUFT');
+}
+
+// ---------- GRENADES & KNIFE ----------
+function throwNade(type) {
+  if (!player.alive) return;
+  if (player.nades[type] <= 0) return flash('KEINE ' + type.toUpperCase());
+  player.nades[type]--;
+  const a = player.ang;
+  grenades.push({
+    x: player.x + Math.cos(a)*16,
+    y: player.y + Math.sin(a)*16,
+    vx: Math.cos(a)*6,
+    vy: Math.sin(a)*6,
+    type, fuse: type === 'flash' ? 1.5 : 2.2,
+    from: 'player',
+  });
+}
+function detonate(g) {
+  if (g.type === 'he') {
+    const R = 90;
+    // damage everything in radius (line of sight not required, it's an explosion)
+    for (const e of enemies) {
+      const d = Math.hypot(e.x - g.x, e.y - g.y);
+      if (d < R) {
+        e.hp -= 80 * (1 - d/R);
+        if (e.hp <= 0) { player.money += 300; kills++; }
+      }
+    }
+    const dp = Math.hypot(player.x - g.x, player.y - g.y);
+    if (dp < R && player.alive) damagePlayer(60 * (1 - dp/R));
+    for (let i = 0; i < 40; i++) particles.push({
+      x:g.x, y:g.y,
+      vx:(Math.random()-0.5)*8, vy:(Math.random()-0.5)*8,
+      life:25, color: i%2 ? '#fc0' : '#f60'
+    });
+  } else if (g.type === 'flash') {
+    const R = 160;
+    for (const e of enemies) {
+      const d = Math.hypot(e.x - g.x, e.y - g.y);
+      if (d < R && !lineHitsWall(g.x, g.y, e.x, e.y)) {
+        e.flashed = 3 * (1 - d/R);
+      }
+    }
+    const dp = Math.hypot(player.x - g.x, player.y - g.y);
+    if (dp < R && !lineHitsWall(g.x, g.y, player.x, player.y)) {
+      flashAmount = Math.min(1, 1.2 * (1 - dp/R));
+    }
+    for (let i = 0; i < 30; i++) particles.push({
+      x:g.x, y:g.y,
+      vx:(Math.random()-0.5)*6, vy:(Math.random()-0.5)*6,
+      life:15, color:'#fff'
+    });
+  }
+}
+
+function knifeAttack() {
+  if (!player.alive) return;
+  if (knifeFlash > 0) return;
+  knifeFlash = 0.25;
+  const reach = 32;
+  const ax = player.x + Math.cos(player.ang)*reach;
+  const ay = player.y + Math.sin(player.ang)*reach;
+  for (const e of enemies) {
+    if (e.hp <= 0) continue;
+    if (Math.hypot(ax - e.x, ay - e.y) < e.r + 8) {
+      e.hp -= 60;
+      for (let i = 0; i < 8; i++) particles.push({
+        x:e.x, y:e.y, vx:(Math.random()-0.5)*3, vy:(Math.random()-0.5)*3,
+        life:15, color:'#f00'
+      });
+      if (e.hp <= 0) { player.money += 1500; kills++; flash('+ $1500 (KNIFE)'); }
+    }
+  }
 }
 
 // ---------- HELPERS ----------
@@ -254,9 +361,11 @@ function flash(t) {
 function spawnEnemies(n) {
   enemies = [];
   for (let i = 0; i < n; i++) {
+    // half spawn upper-right (push A), half lower-right (push B)
+    const upper = i % 2 === 0;
     enemies.push({
       x: W - 60 - (i%2)*30,
-      y: 60 + i*40,
+      y: upper ? 40 + (i*30) : H - 80 - (i*30),
       r: 12, hp: 100, armor: 0,
       weapon: ['glock','mp5','ak47'][Math.min(2, Math.floor(round/2))],
       ammo: 30, reserve: 60,
@@ -264,6 +373,8 @@ function spawnEnemies(n) {
       ang: Math.PI,
       target: null,
       planTimer: 0,
+      flashed: 0,
+      targetSite: upper ? 0 : 1,
     });
     enemies[i].ammo = WEAPONS[enemies[i].weapon].mag;
   }
@@ -358,14 +469,16 @@ function startRound() {
   player.alive = true;
   player.hp = 100;
   player.x = 60; player.y = H-60;
-  bullets = []; particles = [];
-  bomb = { planted:false, x:0, y:0, timer:0, defusing:false, defuseT:0 };
+  bullets = []; particles = []; grenades = [];
+  flashAmount = 0;
+  bomb = { planted:false, x:0, y:0, site:null, timer:0, defusing:false, defuseT:0 };
   spawnEnemies(2 + Math.min(3, Math.floor(round/2)));
   flash('RUNDE ' + round + ' — GO GO GO');
 }
 function endRound(winner) {
   if (roundEnding) return;
   roundEnding = true;
+  if (!player.alive) deaths++;
   if (winner === 'CT') { ctScore++; player.money += 3250; flash('CT GEWINNT'); }
   else                 { tScore++;  player.money += 1400; flash('T GEWINNT'); }
   setTimeout(() => {
@@ -373,7 +486,8 @@ function endRound(winner) {
     if (ctScore >= 8 || tScore >= 8) {
       flash((ctScore > tScore ? 'CT' : 'T') + ' GEWINNT DAS SPIEL!');
       ctScore = 0; tScore = 0; round = 1;
-      player.money = 800;
+      player.money = 800; kills = 0; deaths = 0;
+      player.nades = { he: 0, flash: 0 };
     }
     startRound();
   }, 2500);
@@ -381,39 +495,46 @@ function endRound(winner) {
 
 // ---------- AI ----------
 function updateAI(e, dt) {
+  if (e.flashed > 0) { e.flashed -= dt; e.ang += (Math.random()-0.5)*0.3; return; }
   // line of sight
   const dx = player.x - e.x, dy = player.y - e.y;
   const dist = Math.hypot(dx, dy);
   const sees = !lineHitsWall(e.x, e.y, player.x, player.y) && player.alive;
-  e.ang = Math.atan2(dy, dx);
 
   if (sees && dist < 400) {
-    // strafe a bit
+    e.ang = Math.atan2(dy, dx);
     const sx = -Math.sin(e.ang), sy = Math.cos(e.ang);
     const dir = (Math.floor(performance.now()/700) % 2) ? 1 : -1;
     tryMove(e, sx*dir*1.2, sy*dir*1.2);
     enemyShoot(e);
+  } else if (!bomb.planted) {
+    // head to assigned bombsite
+    const site = bombSites[e.targetSite];
+    const tx = site.x + site.w/2, ty = site.y + site.h/2;
+    const ddx = tx - e.x, ddy = ty - e.y, dd = Math.hypot(ddx, ddy);
+    e.ang = Math.atan2(ddy, ddx);
+    if (dd > 5) tryMove(e, (ddx/dd)*1.4, (ddy/dd)*1.4);
   } else {
-    // patrol toward player roughly
-    if (dist > 5) {
-      tryMove(e, (dx/dist)*1.5, (dy/dist)*1.5);
-    }
+    // bomb is planted, hold position roughly
+    e.ang = Math.atan2(dy, dx);
   }
 }
 
 // ---------- BOMB ----------
 function updateBomb(dt) {
-  // T-side AI plants if a bot stands in site and player is far
   if (!bomb.planted) {
     for (const e of enemies) {
-      if (e.x > bombSite.x && e.x < bombSite.x+bombSite.w &&
-          e.y > bombSite.y && e.y < bombSite.y+bombSite.h) {
+      let inSite = null;
+      for (const s of bombSites) {
+        if (e.x > s.x && e.x < s.x+s.w && e.y > s.y && e.y < s.y+s.h) { inSite = s; break; }
+      }
+      if (inSite) {
         e.planTimer = (e.planTimer || 0) + dt;
         if (e.planTimer > 3) {
           bomb.planted = true;
-          bomb.x = e.x; bomb.y = e.y;
+          bomb.x = e.x; bomb.y = e.y; bomb.site = inSite.name;
           bomb.timer = 40;
-          flash('BOMBE GELEGT! 40s');
+          flash('BOMBE GELEGT AUF ' + inSite.name + '! 40s');
         }
       } else { e.planTimer = 0; }
     }
@@ -490,7 +611,7 @@ function update() {
             x:b.x, y:b.y, vx:(Math.random()-0.5)*3, vy:(Math.random()-0.5)*3,
             life:15, color:'#f00'
           });
-          if (e.hp <= 0) { player.money += 300; flash('+ $300'); }
+          if (e.hp <= 0) { player.money += 300; kills++; flash('+ $300'); }
         }
       }
     } else {
@@ -511,6 +632,26 @@ function update() {
   // particles
   for (const p of particles) { p.x += p.vx; p.y += p.vy; p.life--; }
   particles = particles.filter(p => p.life > 0);
+
+  // grenades
+  for (const g of grenades) {
+    g.x += g.vx; g.y += g.vy;
+    g.vx *= 0.96; g.vy *= 0.96;
+    // bounce off walls
+    for (const w of walls) {
+      if (g.x > w.x && g.x < w.x+w.w && g.y > w.y && g.y < w.y+w.h) {
+        // crude push out
+        g.x -= g.vx; g.y -= g.vy;
+        g.vx *= -0.5; g.vy *= -0.5;
+      }
+    }
+    g.fuse -= dt;
+    if (g.fuse <= 0) detonate(g);
+  }
+  grenades = grenades.filter(g => g.fuse > 0);
+
+  if (knifeFlash > 0) knifeFlash -= dt;
+  if (flashAmount > 0) flashAmount = Math.max(0, flashAmount - dt*0.4);
 
   updateBomb(dt);
 
@@ -541,16 +682,18 @@ function render() {
     ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(W, i); ctx.stroke();
   }
 
-  // bomb site marker
-  ctx.fillStyle = 'rgba(255,80,0,0.15)';
-  ctx.fillRect(bombSite.x, bombSite.y, bombSite.w, bombSite.h);
-  ctx.strokeStyle = '#f60';
-  ctx.setLineDash([4,4]);
-  ctx.strokeRect(bombSite.x, bombSite.y, bombSite.w, bombSite.h);
-  ctx.setLineDash([]);
-  ctx.fillStyle = '#f60';
-  ctx.font = 'bold 16px monospace';
-  ctx.fillText('A', bombSite.x + 24, bombSite.y + 30);
+  // bomb site markers
+  for (const s of bombSites) {
+    ctx.fillStyle = 'rgba(255,80,0,0.15)';
+    ctx.fillRect(s.x, s.y, s.w, s.h);
+    ctx.strokeStyle = '#f60';
+    ctx.setLineDash([4,4]);
+    ctx.strokeRect(s.x, s.y, s.w, s.h);
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#f60';
+    ctx.font = 'bold 22px monospace';
+    ctx.fillText(s.name, s.x + s.w/2 - 7, s.y + s.h/2 + 7);
+  }
 
   // walls
   ctx.fillStyle = '#5a4a3a';
@@ -584,6 +727,18 @@ function render() {
   ctx.fillStyle = '#ff0';
   for (const b of bullets) ctx.fillRect(b.x-1, b.y-1, 3, 3);
 
+  // grenades
+  for (const g of grenades) {
+    ctx.fillStyle = g.type === 'he' ? '#2a0' : '#88f';
+    ctx.beginPath(); ctx.arc(g.x, g.y, 5, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#000'; ctx.stroke();
+    if (g.fuse < 0.6) {
+      const r = (1 - g.fuse/0.6) * 14;
+      ctx.strokeStyle = '#f00';
+      ctx.beginPath(); ctx.arc(g.x, g.y, r, 0, Math.PI*2); ctx.stroke();
+    }
+  }
+
   // enemies (T = orange/brown)
   for (const e of enemies) {
     ctx.fillStyle = '#c60';
@@ -614,7 +769,22 @@ function render() {
     ctx.lineTo(player.x + Math.cos(player.ang)*18, player.y + Math.sin(player.ang)*18);
     ctx.stroke();
     ctx.lineWidth = 1;
+
+    // knife swing arc
+    if (knifeFlash > 0) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, 30, player.ang - 0.7, player.ang + 0.7);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+    }
   }
+
+  // nade inventory
+  ctx.fillStyle = '#0f0';
+  ctx.font = '12px monospace';
+  ctx.fillText('HE [G]:' + player.nades.he + '  FLASH [F]:' + player.nades.flash, 16, H-20);
 
   // crosshair
   ctx.strokeStyle = '#0f0';
@@ -637,6 +807,40 @@ function render() {
     ctx.fillStyle = '#0f0';
     ctx.font = '11px monospace';
     ctx.fillText('BUY ZONE [B]', 20, H-90);
+  }
+
+  // flashbang overlay
+  if (flashAmount > 0) {
+    ctx.fillStyle = 'rgba(255,255,255,' + flashAmount + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // scoreboard
+  if (showScoreboard) {
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    ctx.fillRect(W/2 - 180, H/2 - 110, 360, 220);
+    ctx.strokeStyle = '#f60';
+    ctx.strokeRect(W/2 - 180, H/2 - 110, 360, 220);
+    ctx.fillStyle = '#f60';
+    ctx.font = 'bold 18px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('SCOREBOARD', W/2, H/2 - 85);
+    ctx.fillStyle = '#fff';
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('CT (DU)', W/2 - 150, H/2 - 50);
+    ctx.fillText('Kills: ' + kills, W/2 - 150, H/2 - 28);
+    ctx.fillText('Deaths: ' + deaths, W/2 - 150, H/2 - 8);
+    ctx.fillText('K/D: ' + (deaths ? (kills/deaths).toFixed(2) : kills), W/2 - 150, H/2 + 12);
+    ctx.fillText('Geld: $' + player.money, W/2 - 150, H/2 + 32);
+    ctx.fillStyle = '#48a';
+    ctx.fillText('Score CT: ' + ctScore, W/2 + 20, H/2 - 28);
+    ctx.fillStyle = '#c60';
+    ctx.fillText('Score T:  ' + tScore, W/2 + 20, H/2 - 8);
+    ctx.fillStyle = '#fff';
+    ctx.fillText('Runde: ' + round, W/2 + 20, H/2 + 12);
+    ctx.fillText('Erstes auf 8 gewinnt', W/2 + 20, H/2 + 32);
+    ctx.textAlign = 'start';
   }
 }
 
